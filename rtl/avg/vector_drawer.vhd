@@ -48,7 +48,14 @@ entity vector_drawer is
            draw         : in  STD_LOGIC;                       -- start new VCTR
            done         : out STD_LOGIC;
            xout         : out STD_LOGIC_VECTOR (10 downto 0);
-           yout         : out STD_LOGIC_VECTOR (10 downto 0)
+           yout         : out STD_LOGIC_VECTOR (10 downto 0);
+           -- Per-pixel framebuffer bounds-validity, asserted when cur_px and
+           -- cur_py both fit in the 11-bit signed framebuffer range during a
+           -- Bresenham WALK step.  Downstream (avg.vhd) gates zout by this so
+           -- off-framebuffer pixels don't get written.  Matches MAME's per-
+           -- segment line clipping at the visible-area boundary -- see
+           -- src/devices/video/vector.cpp screen_update + add_line.
+           pixel_valid  : out STD_LOGIC
      );
 end vector_drawer;
 
@@ -246,23 +253,27 @@ begin
                         err <= resize(-dx_v, 14) - resize(abs(dy_v), 14);
                     end if;
 
-                    -- Off-screen-stroke gate.  MAME's vector_device clips
-                    -- lines that fall outside the visible normalized [0..1]
-                    -- area at the renderer level -- they simply don't draw.
-                    -- Our framebuffer has no such clipper, and "saturate to
-                    -- edge" creates artifacts (lines pointing to corners,
-                    -- the user's "Mondrian" appearance).  Drop the stroke
-                    -- entirely if EITHER endpoint is off-screen, but still
-                    -- snap the accumulator to next_target so subsequent
-                    -- strokes continue from the correct mathematical position.
-                    if (xpos(33) = '0' and xpos(32 downto 25) /= x"00")
-                       or (xpos(33) = '1' and xpos(32 downto 25) /= x"FF")
-                       or (ypos(33) = '0' and ypos(32 downto 25) /= x"00")
-                       or (ypos(33) = '1' and ypos(32 downto 25) /= x"FF")
-                       or (next_target_x(33) = '0' and next_target_x(32 downto 25) /= x"00")
-                       or (next_target_x(33) = '1' and next_target_x(32 downto 25) /= x"FF")
-                       or (next_target_y(33) = '0' and next_target_y(32 downto 25) /= x"00")
-                       or (next_target_y(33) = '1' and next_target_y(32 downto 25) /= x"FF")
+                    -- Off-screen-stroke gate, set to MAME's EXACT visible
+                    -- bounds (from the AVG Lua tracer + vector.cpp analysis,
+                    -- 2026-05-28).  MAME's vector_device clips lines outside
+                    -- the [0..1] normalized visible-area at the renderer.
+                    -- For SW driver visarea(0,250,0,280), that's m_xpos in
+                    -- [0, 250*65536] = [0, 16384000] and m_ypos in
+                    -- [0, 280*65536] = [0, 18350080].  Our CNTR resets to
+                    -- (0,0) which represents MAME's m_xcenter = (125,140)
+                    -- pixels = (8192000, 9175040) m_xpos units.  So our
+                    -- equivalent visible bounds, relative to our CNTR-origin,
+                    -- are +-8192000 X and +-9175040 Y.
+                    --
+                    -- The Lua trace showed only 8 of 1019 visible AVG VCTRs
+                    -- per frame land inside MAME's window -- the other 99%
+                    -- get clipped at the renderer.  Matching that drop here
+                    -- is the right correctness step, not iterating on bit
+                    -- shifts.
+                    if xpos > to_signed(8192000, 34) or xpos < to_signed(-8192000, 34)
+                       or ypos > to_signed(9175040, 34) or ypos < to_signed(-9175040, 34)
+                       or next_target_x > to_signed(8192000, 34) or next_target_x < to_signed(-8192000, 34)
+                       or next_target_y > to_signed(9175040, 34) or next_target_y < to_signed(-9175040, 34)
                     then
                         -- Either endpoint off-screen: silently absorb the
                         -- accumulator update and skip the draw.
@@ -318,6 +329,18 @@ begin
     end process;
 
     done <= itsdone;
+
+    -- Per-pixel framebuffer validity.  Asserted when cur_px/cur_py both
+    -- fit in the 11-bit signed framebuffer range AND we're inside a
+    -- Bresenham walk (state = WALK).  Downstream (avg.vhd) gates zout
+    -- by this so off-framebuffer pixels don't get written -- matches
+    -- MAME's vector.cpp where lines outside [0..1] normalized space
+    -- simply don't render.  In IDLE/CMP1/CMP2 we hold '0' (no draw in
+    -- progress, no pixel write expected).
+    pixel_valid <= '1' when (state = WALK)
+                            and (cur_px(11) = cur_px(10))
+                            and (cur_py(11) = cur_py(10))
+                       else '0';
 
     -- Output cur_px/cur_py SATURATED to the 11-bit framebuffer range.
     -- MAME's vector.cpp normalized-[0..1] rendering naturally clips off-

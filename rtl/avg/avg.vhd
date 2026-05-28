@@ -155,6 +155,7 @@ architecture rtl of avg is
     signal vd_done         : std_logic;
     signal vd_xout         : std_logic_vector(10 downto 0);  -- 11-bit (his drawer)
     signal vd_yout         : std_logic_vector(10 downto 0);  -- 11-bit (his drawer)
+    signal vd_pixel_valid  : std_logic;
 
     -- Effective per-vector intensity = ((int_latch >> 1) * intensity) >> 3.
     signal eff_intens   : unsigned(10 downto 0);
@@ -230,7 +231,8 @@ begin
         draw         => vd_draw,
         done         => vd_done,
         xout         => vd_xout,
-        yout         => vd_yout
+        yout         => vd_yout,
+        pixel_valid  => vd_pixel_valid
     );
 
     -- =========================================================================
@@ -245,7 +247,13 @@ begin
     halted   <= m_halt or (not m_running);
     xout     <= vd_xout;
     yout     <= vd_yout;
-    zout     <= std_logic_vector(eff_intens(7 downto 0));
+    -- zout is GATED by the drawer's pixel_valid: when the Bresenham walker
+    -- steps outside the 11-bit framebuffer range, intensity drops to zero
+    -- so downstream doesn't write a pixel.  This matches MAME's per-segment
+    -- line clipping in vector.cpp -- lines outside [0..1] normalized space
+    -- simply don't render.  See vector_drawer.vhd pixel_valid derivation.
+    zout     <= std_logic_vector(eff_intens(7 downto 0)) when vd_pixel_valid = '1'
+                else (others => '0');
     -- m_color is 4-bit (matches MAME SW handler_6).  His pipeline only takes
     -- bits [2:0] (RGB); bit 3 (cenable / unused per MAME color111) dropped.
     rgbout   <= m_color(2 downto 0);

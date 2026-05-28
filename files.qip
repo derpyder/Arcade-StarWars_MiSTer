@@ -1,4 +1,5 @@
 set_global_assignment -name VHDL_FILE rtl/dpram.vhd
+set_global_assignment -name VHDL_FILE rtl/slapstic.vhd
 set_global_assignment -name VHDL_FILE rtl/avg/vector_drawer.vhd
 set_global_assignment -name VHDL_FILE rtl/avg/avg.vhd
 set_global_assignment -name VHDL_FILE rtl/pokey.vhd

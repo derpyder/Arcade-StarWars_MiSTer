@@ -90,19 +90,24 @@ architecture Behavioral of vector_drawer is
     signal scale_factor : unsigned(8 downto 0);                -- 256 - linear_scale, range 1..256
     signal delta_x_22   : signed(21 downto 0) := (others => '0');  -- rel_x(13s) * scale_factor(9u)
     signal delta_y_22   : signed(21 downto 0) := (others => '0');
-    signal scale_15s    : signed(14 downto 0);                -- scale * 4, zero-extended to signed 15
+    -- scale (13-bit unsigned) * 4 = 15-bit unsigned, range 0..0x7FFC.
+    -- Wrap in a 16-bit signed with a leading '0' so the value stays
+    -- positive when interpreted as signed (since scale's MSB can be 1
+    -- when scale = 0x1000).
+    signal scale_16s    : signed(15 downto 0);
 
 begin
 
     -- Combinational: 256 - linear_scale.  9-bit unsigned, range 1..256.
     scale_factor <= to_unsigned(256, 9) - ('0' & unsigned(linear_scale));
 
-    -- Combinational: scale (13-bit, always non-negative) * 4, zero-extended
-    -- to signed 15-bit so it multiplies cleanly with signed delta_x_22.
-    scale_15s <= signed("00" & scale & "00");
+    -- Combinational: scale (13-bit unsigned, always non-negative) * 4.
+    -- Result is 16-bit signed positive (top bit kept 0 via leading '0').
+    scale_16s <= signed('0' & scale & "00");
 
     process(clk)
         variable e2          : signed(14 downto 0);
+        variable err_var     : signed(13 downto 0);
         variable next_target_x : signed(33 downto 0);
         variable next_target_y : signed(33 downto 0);
         variable next_end_px : signed(11 downto 0);
@@ -133,13 +138,13 @@ begin
                 when CMP1 =>
                     -- Stage 2: multiply by scale * 4, add to current xpos to
                     -- get target.  Then extract pixel coords + init Bresenham.
-                    -- delta_x_22 (22-bit signed) * scale_15s (15-bit signed)
+                    -- delta_x_22 (22-bit signed) * scale_16s (15-bit signed)
                     --   = 37-bit signed product.  resize to 34 bits, sign-
                     --   preserving; overflow saturates implicitly (NUMERIC_STD
                     --   resize on signed wraps; for SW logo's bounded vectors
                     --   we don't hit overflow in practice).
-                    next_target_x := xpos + resize(delta_x_22 * scale_15s, 34);
-                    next_target_y := ypos + resize(delta_y_22 * scale_15s, 34);
+                    next_target_x := xpos + resize(delta_x_22 * scale_16s, 34);
+                    next_target_y := ypos + resize(delta_y_22 * scale_16s, 34);
                     target_x      <= next_target_x;
                     target_y      <= next_target_y;
 
@@ -182,7 +187,7 @@ begin
 
                 when CMP2 =>
                     -- Reserved for second multiply-pipeline stage if Quartus
-                    -- flags timing on the delta_22 * scale_15s product.  Not
+                    -- flags timing on the delta_22 * scale_16s product.  Not
                     -- used in current draft; transition straight to WALK.
                     state <= WALK;
 
@@ -195,16 +200,29 @@ begin
                         itsdone <= '1';
                         state   <= IDLE;
                     elsif clk_ena = '1' then
-                        -- Bresenham step: standard "diamond" comparator.
-                        e2 := err & "0";  -- err * 2
-                        if e2 > -dy_abs then
-                            err    <= err - resize(dy_abs, 14);
-                            cur_px <= cur_px + resize(sx, 12);
+                        -- Standard 2D Bresenham step.  CRITICAL: use a VARIABLE
+                        -- for err's intermediate value so both branches' updates
+                        -- compose.  Original signal-only version had a bug —
+                        -- two `err <= …` writes in the same cycle would last-
+                        -- assignment-win, dropping the X update on diagonals
+                        -- and producing endpoint drift of many pixels per
+                        -- vector.  Variable + final signal-write fixes it.
+                        --
+                        -- Width-extend e2 (=err*2) and the abs deltas to a
+                        -- common 15-bit signed for the comparison.
+                        err_var := err;
+                        e2      := shift_left(resize(err_var, 15), 1);
+
+                        if e2 > resize(-dy_abs, 15) then
+                            err_var := err_var - resize(dy_abs, 14);
+                            cur_px  <= cur_px + resize(sx, 12);
                         end if;
-                        if e2 < dx_abs then
-                            err    <= err + resize(dx_abs, 14);
-                            cur_py <= cur_py + resize(sy, 12);
+                        if e2 < resize(dx_abs, 15) then
+                            err_var := err_var + resize(dx_abs, 14);
+                            cur_py  <= cur_py + resize(sy, 12);
                         end if;
+
+                        err <= err_var;
                     end if;
             end case;
         end if;

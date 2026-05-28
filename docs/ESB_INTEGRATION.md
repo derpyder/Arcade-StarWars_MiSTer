@@ -14,6 +14,33 @@ This doc captures the remaining design decisions so next session can execute.
 
 ---
 
+## TODO: vector vertex brightening (additive beam overlap)
+
+Where two vector beams cross on a real vector monitor, the phosphor at the
+intersection pixel is excited TWICE → brighter dot at the crossing.  Same
+effect for endpoints where multiple vectors share a vertex (a wireframe
+corner where 3 lines meet renders as a bright "node").
+
+This is **item 4** on Videodr0me's "Known Limitations" list ("Beam
+Overlap — not modeled") and #2 of the differentiation wins we tracked
+in `docs/M3_HANDOFF.md` from the starwars-mister fork.
+
+With our new Bresenham drawer (one pixel write per clk_ena), the
+implementation is:
+  - In Videodr0me's `vector_fb_ddram.sv`, change the FB pixel write from
+    OVERWRITE to SATURATING-ADD against the current FB pixel value.
+  - Same-pixel writes from two vectors → brightness accumulates.
+  - Hot vertex pixels naturally render as small bright nodes — exactly
+    the real CRT phosphor behavior at line intersections.
+
+Reference photo (user provided): real SW silicon shows bright vertex
+"nodes" at every wireframe corner of the STAR WARS title.  Our current
+output renders the wireframe lines but corners are not visibly brighter
+than line midpoints — the additive blend is what creates the corner
+"sparkle."
+
+Implementation tracked as a follow-up after Bresenham bug fix lands.
+
 ## Historical cross-reference: Cliff Koch's 1996 conversion
 
 See `docs/esb-conversion-cliff-koch-1996.md`.  Cliff reverse-engineered

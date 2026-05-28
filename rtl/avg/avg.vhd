@@ -214,15 +214,14 @@ begin
     );
 
     -- =========================================================================
-    -- Vector drawer (Wu AA rasterizer, reused from BW).
-    -- Un-gated clk_ena so drawer steps at full clk_12 (12 MHz) rather than
-    -- 1.5 MHz clken.  8× faster vector completion.  Math is invariant to
-    -- step rate.  AVG itself still runs at clken — it samples vd_done at
-    -- 1.5 MHz which is fine since vd_done changes much less often than that.
+    -- Vector drawer.  New analytic-endpoint + Bresenham implementation
+    -- (silicon-faithful per MAME avg_common_strobe3: one multiply per
+    -- VCTR, then walk pixels at clken pace = 1.5 MHz, matching the real
+    -- AVG's DAC ramp rate).
     -- =========================================================================
     drawer : entity work.vector_drawer port map (
         clk          => clk,
-        clk_ena      => '1',
+        clk_ena      => clken,
         scale        => vd_scale,
         linear_scale => vd_linear_scale,
         rel_x        => vd_rel_x,

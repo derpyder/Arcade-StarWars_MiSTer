@@ -297,7 +297,16 @@ begin
                     state <= WALK;
 
                 when WALK =>
-                    if cur_px = end_px and cur_py = end_py then
+                    -- Gate the WALK termination check on clk_ena so zero-
+                    -- displacement strokes (starfield DOTS) hold state=WALK
+                    -- for at least one full clken period.  Previously
+                    -- terminated in 1 clk cycle (80ns at 12 MHz) which is
+                    -- too short for the downstream FB pipeline to capture
+                    -- the pixel_valid/zout pulse -- starfield dots were
+                    -- being dropped silently (verified in tb_drawer sim:
+                    -- the 39 c7 dots per high-score frame produced zero
+                    -- FB writes when termination was unconditional).
+                    if clk_ena = '1' and cur_px = end_px and cur_py = end_py then
                         -- Endpoint reached.  Snap sub-pixel accumulator to
                         -- exact computed endpoint to prevent drift.
                         xpos    <= target_x;

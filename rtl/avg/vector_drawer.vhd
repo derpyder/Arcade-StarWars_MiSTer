@@ -253,35 +253,40 @@ begin
                         err <= resize(-dx_v, 14) - resize(abs(dy_v), 14);
                     end if;
 
-                    -- Off-screen-stroke gate, set to MAME's EXACT visible
-                    -- bounds (from the AVG Lua tracer + vector.cpp analysis,
-                    -- 2026-05-28).  MAME's vector_device clips lines outside
-                    -- the [0..1] normalized visible-area at the renderer.
-                    -- For SW driver visarea(0,250,0,280), that's m_xpos in
-                    -- [0, 250*65536] = [0, 16384000] and m_ypos in
-                    -- [0, 280*65536] = [0, 18350080].  Our CNTR resets to
-                    -- (0,0) which represents MAME's m_xcenter = (125,140)
-                    -- pixels = (8192000, 9175040) m_xpos units.  So our
-                    -- equivalent visible bounds, relative to our CNTR-origin,
-                    -- are +-8192000 X and +-9175040 Y.
+                    -- Cohen-Sutherland trivial-reject.  Skip the stroke ONLY
+                    -- when both endpoints sit on the SAME outside side of
+                    -- MAME's visible box -- in that case the line provably
+                    -- can't cross the box and there's no visible portion to
+                    -- render.  Any other configuration (both inside, or one
+                    -- inside, or endpoints on DIFFERENT outside sides) needs
+                    -- Bresenham to walk and let pixel_valid gate pixels at
+                    -- the framebuffer edge.
                     --
-                    -- The Lua trace showed only 8 of 1019 visible AVG VCTRs
-                    -- per frame land inside MAME's window -- the other 99%
-                    -- get clipped at the renderer.  Matching that drop here
-                    -- is the right correctness step, not iterating on bit
-                    -- shifts.
-                    if xpos > to_signed(8192000, 34) or xpos < to_signed(-8192000, 34)
-                       or ypos > to_signed(9175040, 34) or ypos < to_signed(-9175040, 34)
-                       or next_target_x > to_signed(8192000, 34) or next_target_x < to_signed(-8192000, 34)
-                       or next_target_y > to_signed(9175040, 34) or next_target_y < to_signed(-9175040, 34)
+                    -- The prior overly-strict "skip if any endpoint outside"
+                    -- was discarding strokes that MAME's vector.cpp would
+                    -- clip-and-render (one endpoint inside box, line drawn
+                    -- only up to box boundary).  That cost us the high-score
+                    -- table, SW logo definition, stage select, the four
+                    -- cockpit lasers, etc. -- all of which use strokes with
+                    -- one endpoint outside the visible area.
+                    --
+                    -- Bounds: m_xpos in [-8192000, +8192000] (= MAME's
+                    -- [0, 250*65536] relative to m_xcenter = 125 px) and
+                    -- m_ypos in [-9175040, +9175040].
+                    if (xpos < to_signed(-8192000, 34) and next_target_x < to_signed(-8192000, 34))
+                       or (xpos > to_signed(8192000, 34) and next_target_x > to_signed(8192000, 34))
+                       or (ypos < to_signed(-9175040, 34) and next_target_y < to_signed(-9175040, 34))
+                       or (ypos > to_signed(9175040, 34) and next_target_y > to_signed(9175040, 34))
                     then
-                        -- Either endpoint off-screen: silently absorb the
-                        -- accumulator update and skip the draw.
+                        -- Both endpoints on same outside side: trivially
+                        -- reject.  Snap accumulator to next_target and skip.
                         xpos    <= next_target_x;
                         ypos    <= next_target_y;
                         itsdone <= '1';
                         state   <= IDLE;
                     else
+                        -- May cross the visible box.  Walk it; pixel_valid
+                        -- will gate writes at the framebuffer edge.
                         state <= WALK;
                     end if;
 

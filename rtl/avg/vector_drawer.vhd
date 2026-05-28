@@ -161,17 +161,30 @@ begin
 
                     -- Extract pixel coords from top of accumulators.  cur_px
                     -- has 1 sign-headroom bit + 11-bit framebuffer range.
-                    cur_px        <= xpos(33) & xpos(30 downto 20);
-                    cur_py        <= ypos(33) & ypos(30 downto 20);
-                    next_end_px   := next_target_x(33) & next_target_x(30 downto 20);
-                    next_end_py   := next_target_y(33) & next_target_y(30 downto 20);
+                    --
+                    -- Pixel-pitch widened from 2^20 to 2^22 (4x) on 2026-05-28
+                    -- after MAME debug-script analysis (tools/decode_avg.py) of
+                    -- 7 attract-mode memory dumps showed accumulated m_xpos
+                    -- drifts of 2-4 BILLION per frame for text scenes.  At the
+                    -- old 1px=2^20 ratio, text overflowed the 11-bit framebuffer
+                    -- (+-1024 px) and wrapped mod 2048, producing the "GONE B"
+                    -- fragmentation symptom -- glyphs landing at scattered
+                    -- (orig_pos mod 2048) positions.  Widening to 2^22 brings
+                    -- 2B drift down to ~500 framebuffer pixels (fits cleanly).
+                    -- Per-stroke text becomes ~8 px (reasonable glyph size);
+                    -- per-stroke logo becomes ~0.2 px (sub-pixel, accumulates
+                    -- through the 34-bit accumulator's fractional component).
+                    cur_px        <= xpos(33) & xpos(32 downto 22);
+                    cur_py        <= ypos(33) & ypos(32 downto 22);
+                    next_end_px   := next_target_x(33) & next_target_x(32 downto 22);
+                    next_end_py   := next_target_y(33) & next_target_y(32 downto 22);
                     end_px        <= next_end_px;
                     end_py        <= next_end_py;
 
                     -- Bresenham init: dx_abs, dy_abs, sx, sy, err.
                     -- err = dx_abs - dy_abs, the standard 2D Bresenham seed.
-                    dx_v := resize(next_end_px - (xpos(33) & xpos(30 downto 20)), 13);
-                    dy_v := resize(next_end_py - (ypos(33) & ypos(30 downto 20)), 13);
+                    dx_v := resize(next_end_px - (xpos(33) & xpos(32 downto 22)), 13);
+                    dy_v := resize(next_end_py - (ypos(33) & ypos(32 downto 22)), 13);
                     if dx_v >= 0 then
                         dx_abs <= dx_v;
                         sx     <= to_signed(1, 2);

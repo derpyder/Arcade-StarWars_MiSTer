@@ -104,9 +104,17 @@ begin
     -- Combinational: 256 - linear_scale.  9-bit unsigned, range 1..256.
     scale_factor <= to_unsigned(256, 9) - ('0' & unsigned(linear_scale));
 
-    -- Combinational: scale (13-bit unsigned, always non-negative) * 4.
-    -- Result is 16-bit signed positive (top bit kept 0 via leading '0').
-    scale_16s <= signed('0' & scale & "00");
+    -- Combinational: widen scale (13-bit unsigned) to 16-bit signed positive.
+    -- No shift -- per MAME avg_common_strobe3, the per-VCTR delta is
+    --   (rel >> 3) * cycles * (256 - m_scale) >> 4
+    -- so the cycles factor enters at unit weight, not *4.  The original
+    -- *4 here combined with avg.vhd's vd_scale table top of 4096 produced
+    -- a 64x over-scale (8x from missing >>3 on rel, 4x from this multiplier,
+    -- 2x from the table magnitude) -- the drawer was producing screen-
+    -- spanning lines for moderate dvx values and walking 64x more Bresenham
+    -- pixels per vector than intended (1 fps).  Table is now downsized 16x
+    -- in avg.vhd to put MAME's 2^(8-total_shift) factor at unit weight here.
+    scale_16s <= signed("000" & scale);
 
     process(clk)
         variable e2          : signed(14 downto 0);

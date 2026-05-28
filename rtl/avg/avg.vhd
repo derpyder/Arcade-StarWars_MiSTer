@@ -318,22 +318,24 @@ begin
 
     vd_linear_scale <= m_scale;
 
+    -- vd_scale = 2^(8 - total_shift), matching MAME's effective cycles*1/16
+    -- factor per VCTR (see avg_common_strobe3, mame_avgdvg_ref.cpp:636 in
+    -- the starwars-mister fork).  Old table started at 4096 = 2^12 which,
+    -- combined with vector_drawer's *4 multiplier and the missing >>3 on
+    -- rel_x, produced a 64x over-scale: screen-spanning lines for moderate
+    -- dvx values and 1 fps Bresenham walks.  Top of table is now 256.
     vd_scale_proc : process(total_shift)
     begin
         case to_integer(total_shift) is
-            when 0  => vd_scale <= "1000000000000";  -- 4096
-            when 1  => vd_scale <= "0100000000000";  -- 2048
-            when 2  => vd_scale <= "0010000000000";  -- 1024
-            when 3  => vd_scale <= "0001000000000";  --  512
-            when 4  => vd_scale <= "0000100000000";  --  256
-            when 5  => vd_scale <= "0000010000000";  --  128
-            when 6  => vd_scale <= "0000001000000";  --   64
-            when 7  => vd_scale <= "0000000100000";  --   32
-            when 8  => vd_scale <= "0000000010000";  --   16
-            when 9  => vd_scale <= "0000000001000";  --    8
-            when 10 => vd_scale <= "0000000000100";  --    4
-            when 11 => vd_scale <= "0000000000010";  --    2
-            when 12 => vd_scale <= "0000000000001";  --    1
+            when 0  => vd_scale <= "0000100000000";  -- 256
+            when 1  => vd_scale <= "0000010000000";  -- 128
+            when 2  => vd_scale <= "0000001000000";  --  64
+            when 3  => vd_scale <= "0000000100000";  --  32
+            when 4  => vd_scale <= "0000000010000";  --  16
+            when 5  => vd_scale <= "0000000001000";  --   8
+            when 6  => vd_scale <= "0000000000100";  --   4
+            when 7  => vd_scale <= "0000000000010";  --   2
+            when 8  => vd_scale <= "0000000000001";  --   1
             when others => vd_scale <= (others => '0');  -- sub-pixel: skip
         end case;
     end process;

@@ -246,9 +246,33 @@ begin
                         err <= resize(-dx_v, 14) - resize(abs(dy_v), 14);
                     end if;
 
-                    state <= WALK;
-                    -- (CMP2 state folded into CMP1 for now; multiply pipeline
-                    --  depth might force a second register if timing fails.)
+                    -- Off-screen-stroke gate.  MAME's vector_device clips
+                    -- lines that fall outside the visible normalized [0..1]
+                    -- area at the renderer level -- they simply don't draw.
+                    -- Our framebuffer has no such clipper, and "saturate to
+                    -- edge" creates artifacts (lines pointing to corners,
+                    -- the user's "Mondrian" appearance).  Drop the stroke
+                    -- entirely if EITHER endpoint is off-screen, but still
+                    -- snap the accumulator to next_target so subsequent
+                    -- strokes continue from the correct mathematical position.
+                    if (xpos(33) = '0' and xpos(32 downto 25) /= x"00")
+                       or (xpos(33) = '1' and xpos(32 downto 25) /= x"FF")
+                       or (ypos(33) = '0' and ypos(32 downto 25) /= x"00")
+                       or (ypos(33) = '1' and ypos(32 downto 25) /= x"FF")
+                       or (next_target_x(33) = '0' and next_target_x(32 downto 25) /= x"00")
+                       or (next_target_x(33) = '1' and next_target_x(32 downto 25) /= x"FF")
+                       or (next_target_y(33) = '0' and next_target_y(32 downto 25) /= x"00")
+                       or (next_target_y(33) = '1' and next_target_y(32 downto 25) /= x"FF")
+                    then
+                        -- Either endpoint off-screen: silently absorb the
+                        -- accumulator update and skip the draw.
+                        xpos    <= next_target_x;
+                        ypos    <= next_target_y;
+                        itsdone <= '1';
+                        state   <= IDLE;
+                    else
+                        state <= WALK;
+                    end if;
 
                 when CMP2 =>
                     -- Reserved for second multiply-pipeline stage if Quartus

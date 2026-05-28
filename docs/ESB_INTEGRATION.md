@@ -14,6 +14,25 @@ This doc captures the remaining design decisions so next session can execute.
 
 ---
 
+## Historical cross-reference: Cliff Koch's 1996 conversion
+
+See `docs/esb-conversion-cliff-koch-1996.md`.  Cliff reverse-engineered
+a 22V10 PAL slapstic clone for ESB in 1996.  His document confirms:
+
+- **Slapstic type 101 = ESB = Tetris** (same chip per his note).
+  d18c7db's `I_SLAP_TYPE => 101` is the right value.
+- Per-file ROM placement matches our MRA exactly (136031.101/.102/.203/
+  .104 for main CPU; 136031.111 for vector ROM; 136031.112/.113 for
+  sound; 136031.107-110 for mathbox PROMs).
+- His combined SW+ESB conversion uses an "extra A14 line" to pick
+  game at runtime — the silicon-level equivalent of our `mod_esb` flag.
+- His PAL pin labels (`pre_1`, `pre_2`, `ltch_8000`, `pg_en`) map onto
+  MAME's slapstic state machine — useful as a cross-check if d18c7db's
+  implementation ever diverges from real ESB silicon.
+- **NOVRAM warning**: NOVRAM byte meanings differ between SW and ESB.
+  Our X2212 NVRAM will need either per-game keys or accept that
+  switching mods loses high-score/settings persistence.
+
 ## What `slapstic.vhd` is and isn't
 
 It's the **address-pattern recognizer** — a small state machine that watches CPU reads at specific magic addresses and outputs a 2-bit bank-select signal. It does **NOT** itself contain the 32 KB of slapstic-protected ROM. That ROM lives in a separate dpram (4 banks × 8 KB), and our integration code multiplexes the 4 banks based on the slapstic's `O_BS` output.

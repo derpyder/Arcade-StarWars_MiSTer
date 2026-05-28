@@ -88,8 +88,11 @@ architecture Behavioral of vector_drawer is
 
     -- ===== Pipeline registers =====
     signal scale_factor : unsigned(8 downto 0);                -- 256 - linear_scale, range 1..256
-    signal delta_x_22   : signed(21 downto 0) := (others => '0');  -- rel_x(13s) * scale_factor(9u)
-    signal delta_y_22   : signed(21 downto 0) := (others => '0');
+    -- Multiply width: signed(13) * signed(10) = signed(23).  Was 22 before
+    -- which truncated the MSB of the product (Quartus error 10344 on
+    -- subsequent expressions that used delta_22).  Now 23 bits exact.
+    signal delta_x_23   : signed(22 downto 0) := (others => '0');
+    signal delta_y_23   : signed(22 downto 0) := (others => '0');
     -- scale (13-bit unsigned) * 4 = 15-bit unsigned, range 0..0x7FFC.
     -- Wrap in a 16-bit signed with a leading '0' so the value stays
     -- positive when interpreted as signed (since scale's MSB can be 1
@@ -129,8 +132,8 @@ begin
                         itsdone  <= '1';
                     elsif draw = '1' then
                         -- Stage 1: register the 22-bit rel * scale_factor product.
-                        delta_x_22 <= signed(rel_x) * signed('0' & std_logic_vector(scale_factor));
-                        delta_y_22 <= signed(rel_y) * signed('0' & std_logic_vector(scale_factor));
+                        delta_x_23 <= signed(rel_x) * signed('0' & std_logic_vector(scale_factor));
+                        delta_y_23 <= signed(rel_y) * signed('0' & std_logic_vector(scale_factor));
                         itsdone    <= '0';
                         state      <= CMP1;
                     end if;
@@ -138,13 +141,13 @@ begin
                 when CMP1 =>
                     -- Stage 2: multiply by scale * 4, add to current xpos to
                     -- get target.  Then extract pixel coords + init Bresenham.
-                    -- delta_x_22 (22-bit signed) * scale_16s (15-bit signed)
+                    -- delta_x_23 (22-bit signed) * scale_16s (15-bit signed)
                     --   = 37-bit signed product.  resize to 34 bits, sign-
                     --   preserving; overflow saturates implicitly (NUMERIC_STD
                     --   resize on signed wraps; for SW logo's bounded vectors
                     --   we don't hit overflow in practice).
-                    next_target_x := xpos + resize(delta_x_22 * scale_16s, 34);
-                    next_target_y := ypos + resize(delta_y_22 * scale_16s, 34);
+                    next_target_x := xpos + resize(delta_x_23 * scale_16s, 34);
+                    next_target_y := ypos + resize(delta_y_23 * scale_16s, 34);
                     target_x      <= next_target_x;
                     target_y      <= next_target_y;
 

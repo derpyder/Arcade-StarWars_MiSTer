@@ -474,7 +474,9 @@ module starwars (
 	wire avg_go = (main_addr >= 16'h4600 && main_addr <= 16'h461F) && !main_rw && main_vma;
 	wire avg_rst_cmd = (main_addr >= 16'h4620 && main_addr <= 16'h463F) && !main_rw && main_vma;
 
-	wire [15:0] avg_dn_addr = dn_addr[15:0];
+	// Widened to 17 bits so PROM-driven AVG can decode the state PROM
+	// at dn 0x11000-0x110FF (MRA loads 136021-109.4b there).
+	wire [16:0] avg_dn_addr = dn_addr[16:0];
 	avg vector_generator (
 		.clk(clk_12),
 		.clken(ce_1m5),

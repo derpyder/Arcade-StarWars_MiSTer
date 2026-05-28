@@ -71,7 +71,8 @@ architecture sim of tb_drawer is
         return result;
     end function;
 
-    file pixel_log : text open write_mode is "tb_pixel_writes.txt";
+    file pixel_log  : text open write_mode is "tb_pixel_writes.txt";
+    file stroke_log : text open write_mode is "tb_strokes.txt";
 
 begin
     -- Clock
@@ -201,6 +202,30 @@ begin
                 write(line_buf, integer'image(to_integer(unsigned(rgbout))));
                 writeline(pixel_log, line_buf);
             end if;
+        end if;
+    end process;
+
+    -- Per-stroke endpoint capture: on each vd_done rising edge, log
+    -- (xout, yout, zout, rgbout) -- this is where the WALK terminated,
+    -- = stroke endpoint pixel.  Lets us compare to MAME's expected
+    -- endpoints per VCTR.
+    stroke_cap: process(clk)
+        variable line_buf : line;
+        variable prev_done : std_logic := '0';
+    begin
+        if rising_edge(clk) then
+            if dbg(13) = '1' and prev_done = '0' then
+                -- vd_done just rose: stroke completed
+                write(line_buf, integer'image(to_integer(signed(xout))));
+                write(line_buf, string'(","));
+                write(line_buf, integer'image(to_integer(signed(yout))));
+                write(line_buf, string'(","));
+                write(line_buf, integer'image(to_integer(unsigned(zout))));
+                write(line_buf, string'(","));
+                write(line_buf, integer'image(to_integer(unsigned(rgbout))));
+                writeline(stroke_log, line_buf);
+            end if;
+            prev_done := dbg(13);
         end if;
     end process;
 

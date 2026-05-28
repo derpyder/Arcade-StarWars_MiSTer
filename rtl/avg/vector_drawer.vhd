@@ -162,29 +162,26 @@ begin
                     -- Extract pixel coords from top of accumulators.  cur_px
                     -- has 1 sign-headroom bit + 11-bit framebuffer range.
                     --
-                    -- Pixel-pitch widened from 2^20 to 2^22 (4x) on 2026-05-28
-                    -- after MAME debug-script analysis (tools/decode_avg.py) of
-                    -- 7 attract-mode memory dumps showed accumulated m_xpos
-                    -- drifts of 2-4 BILLION per frame for text scenes.  At the
-                    -- old 1px=2^20 ratio, text overflowed the 11-bit framebuffer
-                    -- (+-1024 px) and wrapped mod 2048, producing the "GONE B"
-                    -- fragmentation symptom -- glyphs landing at scattered
-                    -- (orig_pos mod 2048) positions.  Widening to 2^22 brings
-                    -- 2B drift down to ~500 framebuffer pixels (fits cleanly).
-                    -- Per-stroke text becomes ~8 px (reasonable glyph size);
-                    -- per-stroke logo becomes ~0.2 px (sub-pixel, accumulates
-                    -- through the 34-bit accumulator's fractional component).
-                    cur_px        <= xpos(33) & xpos(32 downto 22);
-                    cur_py        <= ypos(33) & ypos(32 downto 22);
-                    next_end_px   := next_target_x(33) & next_target_x(32 downto 22);
-                    next_end_py   := next_target_y(33) & next_target_y(32 downto 22);
+                    -- Pixel-pitch set to 2^14 = ~16384 m_xpos units per
+                    -- framebuffer pixel.  Derivation from MAME source:
+                    -- vector.cpp:screen_update uses xscale = 1/(65536*W) to
+                    -- transform m_xpos into normalized [0..1] screen coords,
+                    -- which fixes "1 MAME pixel = 65536 m_xpos units".  SW
+                    -- driver has visarea(0,250,0,280), so MAME's visible m_xpos
+                    -- range is 250*65536 = 16.4M units.  Our framebuffer is
+                    -- 980x700 vs MAME's 250x280 = 3.92x linear scale.  Matching
+                    -- ratio: 1 fb px = 65536/3.92 = ~16710 m_xpos units = ~2^14.
+                    cur_px        <= xpos(33) & xpos(24 downto 14);
+                    cur_py        <= ypos(33) & ypos(24 downto 14);
+                    next_end_px   := next_target_x(33) & next_target_x(24 downto 14);
+                    next_end_py   := next_target_y(33) & next_target_y(24 downto 14);
                     end_px        <= next_end_px;
                     end_py        <= next_end_py;
 
                     -- Bresenham init: dx_abs, dy_abs, sx, sy, err.
                     -- err = dx_abs - dy_abs, the standard 2D Bresenham seed.
-                    dx_v := resize(next_end_px - (xpos(33) & xpos(32 downto 22)), 13);
-                    dy_v := resize(next_end_py - (ypos(33) & ypos(32 downto 22)), 13);
+                    dx_v := resize(next_end_px - (xpos(33) & xpos(24 downto 14)), 13);
+                    dy_v := resize(next_end_py - (ypos(33) & ypos(24 downto 14)), 13);
                     if dx_v >= 0 then
                         dx_abs <= dx_v;
                         sx     <= to_signed(1, 2);
@@ -254,10 +251,21 @@ begin
 
     done <= itsdone;
 
-    -- Output the lower 11 bits of cur_px/cur_py.  Out-of-range pixels
-    -- (cur_px outside [-1024, 1023]) wrap; framebuffer write path should
-    -- bounds-check before writing.
-    xout <= std_logic_vector(cur_px(10 downto 0));
-    yout <= std_logic_vector(cur_py(10 downto 0));
+    -- Output cur_px/cur_py SATURATED to the 11-bit framebuffer range.
+    -- MAME's vector.cpp normalized-[0..1] rendering naturally clips off-
+    -- screen lines via container.add_line; our framebuffer wraps mod 2048
+    -- if we just truncate the low 11 bits.  That produced the "GONE B"
+    -- fragmentation symptom -- partial glyphs landing at (orig mod 2048)
+    -- scattered positions.  Saturation clamps off-screen pixels to the
+    -- edge (visible artifact but no fragmentation), matching MAME's
+    -- visible-area clip behaviour more faithfully.
+    -- cur_px/cur_py is signed(11 downto 0) = 12-bit signed.  In-range
+    -- when bits 11 == 10 (sign extension consistent).  Otherwise saturate.
+    xout <= "01111111111" when (cur_px(11) = '0' and cur_px(10) = '1') else
+            "10000000000" when (cur_px(11) = '1' and cur_px(10) = '0') else
+            std_logic_vector(cur_px(10 downto 0));
+    yout <= "01111111111" when (cur_py(11) = '0' and cur_py(10) = '1') else
+            "10000000000" when (cur_py(11) = '1' and cur_py(10) = '0') else
+            std_logic_vector(cur_py(10 downto 0));
 
 end Behavioral;

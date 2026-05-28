@@ -1,0 +1,13 @@
+# GHDL build artifacts
+work-obj*.cf
+*.cf
+*.o
+
+# Generated simulation outputs
+tb_pixel_writes.txt
+pixels_*.txt
+render_*.png
+
+# Generated input files (regenerable from MAME assets via prep.py)
+vec_mem.hex
+avg_prom.hex

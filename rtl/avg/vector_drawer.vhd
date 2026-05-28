@@ -159,29 +159,73 @@ begin
                     target_x      <= next_target_x;
                     target_y      <= next_target_y;
 
-                    -- Extract pixel coords from top of accumulators.  cur_px
-                    -- has 1 sign-headroom bit + 11-bit framebuffer range.
+                    -- Extract pixel coords from top of accumulators with
+                    -- SATURATION on overflow.  Pixel pitch is 2^14 m_xpos
+                    -- units (derived from MAME vector.cpp's 65536 m_xpos/px
+                    -- divided by our 980/250 framebuffer scale ratio).
                     --
-                    -- Pixel-pitch set to 2^14 = ~16384 m_xpos units per
-                    -- framebuffer pixel.  Derivation from MAME source:
-                    -- vector.cpp:screen_update uses xscale = 1/(65536*W) to
-                    -- transform m_xpos into normalized [0..1] screen coords,
-                    -- which fixes "1 MAME pixel = 65536 m_xpos units".  SW
-                    -- driver has visarea(0,250,0,280), so MAME's visible m_xpos
-                    -- range is 250*65536 = 16.4M units.  Our framebuffer is
-                    -- 980x700 vs MAME's 250x280 = 3.92x linear scale.  Matching
-                    -- ratio: 1 fb px = 65536/3.92 = ~16710 m_xpos units = ~2^14.
-                    cur_px        <= xpos(33) & xpos(24 downto 14);
-                    cur_py        <= ypos(33) & ypos(24 downto 14);
-                    next_end_px   := next_target_x(33) & next_target_x(24 downto 14);
-                    next_end_py   := next_target_y(33) & next_target_y(24 downto 14);
-                    end_px        <= next_end_px;
-                    end_py        <= next_end_py;
+                    -- cur_px is signed(11 downto 0).  The "pixel value" of
+                    -- xpos = xpos / 2^14, which fits in 12-bit signed only
+                    -- when bits 32..25 of xpos sign-extend consistently with
+                    -- bit 33.  Anything beyond that is off-screen and must
+                    -- saturate, NOT wrap -- otherwise we get apparently-
+                    -- coherent "Mondrian" geometry from drift-wrap aliasing.
+                    if xpos(33) = '0' and xpos(32 downto 25) /= x"00" then
+                        cur_px <= to_signed(2047, 12);     -- pos overflow
+                    elsif xpos(33) = '1' and xpos(32 downto 25) /= x"FF" then
+                        cur_px <= to_signed(-2048, 12);    -- neg overflow
+                    else
+                        cur_px <= xpos(33) & xpos(24 downto 14);
+                    end if;
+
+                    if ypos(33) = '0' and ypos(32 downto 25) /= x"00" then
+                        cur_py <= to_signed(2047, 12);
+                    elsif ypos(33) = '1' and ypos(32 downto 25) /= x"FF" then
+                        cur_py <= to_signed(-2048, 12);
+                    else
+                        cur_py <= ypos(33) & ypos(24 downto 14);
+                    end if;
+
+                    -- Same saturation for end_px, end_py from next_target.
+                    if next_target_x(33) = '0' and next_target_x(32 downto 25) /= x"00" then
+                        next_end_px := to_signed(2047, 12);
+                    elsif next_target_x(33) = '1' and next_target_x(32 downto 25) /= x"FF" then
+                        next_end_px := to_signed(-2048, 12);
+                    else
+                        next_end_px := next_target_x(33) & next_target_x(24 downto 14);
+                    end if;
+                    end_px <= next_end_px;
+
+                    if next_target_y(33) = '0' and next_target_y(32 downto 25) /= x"00" then
+                        next_end_py := to_signed(2047, 12);
+                    elsif next_target_y(33) = '1' and next_target_y(32 downto 25) /= x"FF" then
+                        next_end_py := to_signed(-2048, 12);
+                    else
+                        next_end_py := next_target_y(33) & next_target_y(24 downto 14);
+                    end if;
+                    end_py <= next_end_py;
 
                     -- Bresenham init: dx_abs, dy_abs, sx, sy, err.
                     -- err = dx_abs - dy_abs, the standard 2D Bresenham seed.
-                    dx_v := resize(next_end_px - (xpos(33) & xpos(24 downto 14)), 13);
-                    dy_v := resize(next_end_py - (ypos(33) & ypos(24 downto 14)), 13);
+                    -- Use saturated cur values to compute starting position.
+                    -- Note: we recompute "cur" here for the delta calculation
+                    -- (since cur_px hasn't been written yet -- this process
+                    --  writes its own state on the next clock edge).
+                    if xpos(33) = '0' and xpos(32 downto 25) /= x"00" then
+                        dx_v := resize(next_end_px - to_signed(2047, 12), 13);
+                    elsif xpos(33) = '1' and xpos(32 downto 25) /= x"FF" then
+                        dx_v := resize(next_end_px - to_signed(-2048, 12), 13);
+                    else
+                        dx_v := resize(next_end_px - (xpos(33) & xpos(24 downto 14)), 13);
+                    end if;
+
+                    if ypos(33) = '0' and ypos(32 downto 25) /= x"00" then
+                        dy_v := resize(next_end_py - to_signed(2047, 12), 13);
+                    elsif ypos(33) = '1' and ypos(32 downto 25) /= x"FF" then
+                        dy_v := resize(next_end_py - to_signed(-2048, 12), 13);
+                    else
+                        dy_v := resize(next_end_py - (ypos(33) & ypos(24 downto 14)), 13);
+                    end if;
                     if dx_v >= 0 then
                         dx_abs <= dx_v;
                         sx     <= to_signed(1, 2);

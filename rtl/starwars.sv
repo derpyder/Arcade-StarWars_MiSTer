@@ -489,11 +489,37 @@ module starwars (
 	// "devious parts" (caller-pattern overrides at e.g. 9DFE) are
 	// handled by the same state machine; no special-case logic needed
 	// in our wrapper.
+	// The slapstic state machine must advance EXACTLY ONCE per CPU access
+	// to its region.  It tracks the running address sequence (the
+	// alternate/bit-set/valid patterns) and a miscount desyncs the bank.
+	//
+	// Original wiring drove I_ASn = ~main_vma.  The 6809's vma can stay
+	// high across consecutive bus cycles at 1.5 MHz (= 8 clk_12 ticks per
+	// cycle), so it does NOT produce one clean address-strobe edge per
+	// access -- the slapstic missed/merged steps and tracked the wrong
+	// bank.  ESB executes 460+ instructions inside $8000-$9FFF during
+	// attract (verified via MAME PC trace) doing JSR $80x0 / BITA $8000
+	// bank-switch sequences, so a wrong bank lands the CPU's JMP/RTS in
+	// the wrong bank's code = crash = black screen.
+	//
+	// Reference: MiSTer Arcade-ATetris (slapstic type 101, same chip)
+	// steps its slapstic once per access gated by CS at the CPU clock.
+	// We mirror that: build a one-clk_12-wide strobe per slapstic access,
+	// timed one clk_12 after ce_1m5 so main_addr has settled for the
+	// cycle, and drive I_ASn from it (one falling edge per access).
+	//
+	// NOTE: exact strobe PHASE (which clk_12 within the CPU cycle the
+	// address is valid) is timing the synthesis report can't show -- if
+	// this still mis-tracks on hardware, SignalTap the slapstic I_A /
+	// I_ASn / O_BS before guessing further (per the sync-timing lessons).
 	wire [1:0] slap_bs;
 	wire       slap_cs_active = mod_esb && (main_addr[15:13] == 3'b100);  // $8000-$9FFF
+	reg        ce_1m5_d1;
+	always @(posedge clk_12) ce_1m5_d1 <= ce_1m5;
+	wire       slap_strobe = slap_cs_active && main_vma && ce_1m5_d1;     // 1 clk_12 per access
 	SLAPSTIC u_slapstic (
 		.I_CK(clk_12),
-		.I_ASn(~main_vma),
+		.I_ASn(~slap_strobe),
 		.I_CSn(~slap_cs_active),
 		.I_A(main_addr[13:0]),
 		.O_BS(slap_bs),

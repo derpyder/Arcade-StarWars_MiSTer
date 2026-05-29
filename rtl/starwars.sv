@@ -1068,6 +1068,7 @@ module starwars (
 	reg  [5:0] dbg_row = 6'd0;
 	reg  [7:0] dbg_div = 8'd0;
 	reg        avg_go_d = 1'b0;
+	reg        fire_d   = 1'b0;    // game-start (wave-select fire) edge detect
 	wire       dbg_slot = (dbg_div[5:0] == 6'd0);   // 1 debug pixel / 64 clk_12 (~1.5% steal, draws in <<1 frame)
 	wire [5:0] dbg_h    = dbg_val[dbg_bit] ? 6'd34 : 6'd5;   // tall=1, short=0
 	wire [9:0] dbg_x    = 10'd40 + dbg_bit * 7'd45;          // cols 40,85,...895
@@ -1076,10 +1077,25 @@ module starwars (
 
 	always @(posedge clk_12) begin
 		avg_go_d <= avg_go;
+		fire_d   <= (fire_l | fire_r);
 		dbg_div  <= dbg_div + 8'd1;
+
+		// Frame counter: RESET on the fire press (= the wave-select trigger
+		// that starts gameplay, per the user's "press trigger to select"
+		// reference) so N is counted from GAME START, not power-on -- attract
+		// is variable-length.  Otherwise ++ once per vggo.  Test procedure:
+		// coin, start, press fire ONCE to pick the wave (resets N=0), then
+		// HANDS OFF -- the freeze N is deterministic from there and matches
+		// MAME counted from the same wave-select point.  (Don't shoot during
+		// the run, or it re-zeros.)
+		if (mod_esb && (fire_l | fire_r) && !fire_d)
+			frame_ctr <= 16'd0;
+		else if (mod_esb && avg_go && !avg_go_d)
+			frame_ctr <= frame_ctr + 16'd1;
+
+		// Bar-draw FSM (independent of the frame counter).
 		if (mod_esb && avg_go && !avg_go_d) begin   // START_FRAME: restart bars
 			dbg_run <= 1'b1; dbg_bit <= 5'd0; dbg_row <= 6'd0;
-			frame_ctr <= frame_ctr + 16'd1;          // count vggos
 		end else if (dbg_run && dbg_slot) begin
 			if (dbg_row + 6'd1 >= dbg_h) begin
 				dbg_row <= 6'd0;

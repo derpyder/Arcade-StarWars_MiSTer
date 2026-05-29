@@ -1,16 +1,24 @@
-# Empire Strikes Back + Star Wars (Atari 1985 / 1983) for MiSTer FPGA
+# Star Wars + The Empire Strikes Back (Atari 1983 / 1985) for MiSTer FPGA
 
-A fork of [Videodr0me/Arcade-StarWars_MiSTer](https://github.com/Videodr0me/Arcade-StarWars_MiSTer) that:
+This is a fork of **[Videodr0me/Arcade-StarWars_MiSTer](https://github.com/Videodr0me/Arcade-StarWars_MiSTer)**. It keeps Videodr0me's excellent Star Wars MiSTer port intact and adds **The Empire Strikes Back (1985)** — the sequel that ran on the same Atari color-vector cabinet — along with a bit-exact AVG drawer rewrite and an auto-calibrating yoke. **One `Arcade-StarWars.rbf` runs both games**, chosen by which `.mra` you launch.
 
-- **Adds Empire Strikes Back** (1985), the sequel that ran on the same Atari vector cabinet. Same .rbf, MRA-selectable.
-- **Replaces the Black Widow-heritage AVG drawer** with a PROM-driven AVG that's bit-exact to MAME at the per-VCTR level (verified across 6522 strokes / 4 scenes via Python diff).
-- **Analog yoke controls work out of the gate** — auto-calibrating, no setup required.
+## Our core vs. Videodr0me's original
 
-Upstream's work — the SW MiSTer port, the original AVG state machine, the framebuffer pipeline, the audio chain, the OSD options, and the entire README following the divider below — is Videodr0me's. Detailed delta:
+| | Videodr0me/Arcade-StarWars_MiSTer (upstream) | **This fork** |
+|---|---|---|
+| **Games** | Star Wars (1983) | Star Wars (1983) **+ The Empire Strikes Back (1985)** |
+| **Slapstic protection** | n/a (Star Wars has no slapstic) | Atari **137412-101** *alternate* ("devious") banking — `rtl/slapstic101.vhd`, a faithful port of MAME's **decapped** type-101. This is the piece that makes The Empire Strikes Back actually playable. |
+| **AVG drawer** | original Black Widow-heritage drawer | **PROM-driven, bit-exact to MAME 0.287** (three per-VCTR math fixes, verified by a Python-vs-MAME stroke diff) |
+| **Analog yoke** | manual range | **auto-calibrating** — no setup |
+| **Star Wars itself** | — | **byte-identical** to upstream (every addition is either Empire-Strikes-Back-gated via `mod_esb`, or a drawer-level fix) |
+
+Everything else — the dual 6809 cores, the mathbox, the audio chain (POKEY / TMS5220 / TL084 / Reticon), the DDR3 framebuffer pipeline, the OSD options, and NVRAM — is Videodr0me's. **Videodr0me's original Star Wars README is preserved in full below the divider.**
+
+The detailed breakdown of what changed:
 
 ## What's Videodr0me's
 
-- Original SW MiSTer port (CPU, mathbox, AVG state machine, audio chain, slapstic, NVRAM)
+- Original SW MiSTer port (CPU, mathbox, AVG state machine, audio chain, NVRAM)
 - `vector_fb_ddram.sv` triple-buffer DDR3 framebuffer + MISTER_FB display path
 - Black Widow drawer heritage and the original analytic-endpoint Bresenham rewrite
 - All hardware peripheral models (POKEY, TMS5220, TL084, Reticon, etc.)
@@ -47,18 +55,17 @@ Lesson: Videodr0me's triple-buffer pipeline was designed and tested for the per-
 
 The diff workflow is what found and validated all three math bugs above. Three iterations of "diff → identify pattern → fix Python → re-diff" reduced total divergence from 939 billion to 0.
 
-**Empire Strikes Back integration** (`rtl/slapstic.vhd`, `releases/Empire Strikes Back.mra`, `mod_esb` plumbing)
+**The Empire Strikes Back** (`rtl/slapstic101.vhd`, `releases/Empire Strikes Back.mra`, `mod_esb` plumbing)
 
-ESB runs on physically identical hardware to Star Wars per MAME's `esb_main_map` — same AVG (same PROM CRC), same mathbox interface, same audio chain, same inputs. Selectable at runtime via the MRA's `<rom index="1">` byte (no rebuild required to switch games). What landed:
+The Empire Strikes Back runs on physically identical hardware to Star Wars per MAME's `esb_main_map` — same AVG (same PROM CRC), same mathbox, same audio chain, same inputs — and is selectable at runtime via the MRA's `<rom index="1">` byte (no rebuild to switch games). The one genuinely hard part was the Atari **slapstic 137412-101** copy-protection chip:
 
-- Atari slapstic 137412-101 copy-protection chip, instantiated from d18c7db's GPL-3 Gauntlet_FPGA port of MAME's state machine. Type 101 selected at runtime.
-- 32 KB slapstic ROM (4 banks × 8 KB) mapped at CPU `$8000-$9FFF`.
-- 64 KB ESB main ROM with the default bank2 CPU mapping (file low halves at `$6000-$7FFF`, `$A000-$FFFF`).
-- `mod_esb` selector in `Arcade-StarWars.sv` reads `ioctl_index=1`. Default = Star Wars; MRA byte = 1 selects ESB. SW path is unchanged when `mod_esb=0`.
-
-Known TODOs gated on hardware result: bank2 alternate page (CPU `$A000-$FFFF` ROM_CONTINUE high halves, needed for late-game features), audio ROM widening (SW 16 KB → ESB 32 KB).
+- The slapstic's *direct* bank switching is simple, but The Empire Strikes Back's **gameplay depends on its *alternate* ("devious") banking** — confirmed against MAME (`mame.exe esb -log` over real play shows 51 alternate-banking sequences reaching banks 0/2). Attract mode uses only direct banking, which is exactly why the game would boot, render one perfect frame, then freeze ~5 frames into gameplay (a computed jump into non-ROM).
+- `rtl/slapstic101.vhd` is a faithful port of MAME's **decapped** type-101 (`src/mame/atari/slapstic.{cpp,h}`, Aaron Giles & Frank Palazzolo). The key insight: it must see the **full 16-bit address on every 6809 bus cycle** — not just the `$8000-$9FFF` window — so it catches the out-of-range `$FFFF` dummy cycle that the alternate sequence pivots on. The earlier in-range-only implementation could never do this. GHDL-verified (11/11, including the negative case), and **confirmed working on hardware**.
+- 32 KB slapstic ROM (4 banks × 8 KB) at CPU `$8000-$9FFF`; 64 KB Empire main ROM (banked); 32 KB Empire audio ROM. The `mod_esb` selector in `Arcade-StarWars.sv` reads `ioctl_index=1` — default is Star Wars; the Empire Strikes Back MRA sets it to 1. The Star Wars path is untouched when `mod_esb=0`.
 
 ---
+
+> ⬇️ **Everything below is Videodr0me's original Star Wars README, preserved as-is.** It documents the upstream Star Wars core (hardware, controls, MiSTer settings, OSD options, ROMs) and applies to both games except where this fork's notes above differ.
 
 # Star Wars (Arcade, 1983) for MiSTer FPGA
 

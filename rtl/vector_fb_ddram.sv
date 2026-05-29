@@ -379,37 +379,22 @@ module vector_fb_ddram (
 						// RECEIVED EOF TOKEN!
 						if (!OSD_FLICKER) begin
 							logic [1:0] next_free_buf;
-							logic [1:0] effective_display_buf;
 
 							// 1. Stash the pointer of the buffer we just finished drawing
 							ready_buf <= draw_buf;
 
-							// 2. If vbl_edge ALSO fires this cycle, display_buf is
-							// scheduled (non-blocking) to become ready_buf via the
-							// triple-buffer vbl handler above.  The next_free_buf
-							// computation must see the post-update display_buf;
-							// otherwise we pick a buffer that's about to become the
-							// new display_buf, immediately start clearing it, and
-							// the scaler reads black during the clear -- producing
-							// the 3-4 Hz black flash on hardware.  Coincident
-							// same-cycle vbl_edge + EOF is rare per cycle but
-							// happens predictably when local vblank and FB_VBL
-							// drift into phase.
-							if (vbl_edge && ready_buf != 2'd3)
-								effective_display_buf = ready_buf;
-							else
-								effective_display_buf = display_buf;
+							// 2. Find the 3rd unused buffer.
+							// We cannot use the currently displayed buffer (display_buf)
+							// We cannot use the buffer we JUST finished (draw_buf, which is becoming ready_buf)
+							if      (display_buf != 2'd0 && draw_buf != 2'd0) next_free_buf = 2'd0;
+							else if (display_buf != 2'd1 && draw_buf != 2'd1) next_free_buf = 2'd1;
+							else                                              next_free_buf = 2'd2;
 
-							// 3. Find the unused buffer (not effective display, not draw_buf).
-							if      (effective_display_buf != 2'd0 && draw_buf != 2'd0) next_free_buf = 2'd0;
-							else if (effective_display_buf != 2'd1 && draw_buf != 2'd1) next_free_buf = 2'd1;
-							else                                                         next_free_buf = 2'd2;
-
-							// 4. Assign BOTH registers to the newly calculated free buffer
+							// 3. Assign BOTH registers to the newly calculated free buffer
 							draw_buf         <= next_free_buf;
 							clear_target_buf <= next_free_buf;
 
-							// 5. Trigger clear
+							// 4. Trigger clear
 							clearing   <= 1'b1;
 							clear_addr <= 0;
 						end

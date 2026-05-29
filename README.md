@@ -1,6 +1,12 @@
-# derpyder fork — MAME-bit-exact AVG drawer + Empire Strikes Back scaffolding
+# Empire Strikes Back + Star Wars (Atari 1985 / 1983) for MiSTer FPGA
 
-This is a fork of [Videodr0me/Arcade-StarWars_MiSTer](https://github.com/Videodr0me/Arcade-StarWars_MiSTer). Upstream's work — the SW MiSTer port, the AVG state machine, the framebuffer pipeline, the audio chain, the OSD options, and the entire README following the divider below — is Videodr0me's. This fork adds three things.
+A fork of [Videodr0me/Arcade-StarWars_MiSTer](https://github.com/Videodr0me/Arcade-StarWars_MiSTer) that:
+
+- **Adds Empire Strikes Back** (1985), the sequel that ran on the same Atari vector cabinet. Same .rbf, MRA-selectable.
+- **Replaces the Black Widow-heritage AVG drawer** with a PROM-driven AVG that's bit-exact to MAME at the per-VCTR level (verified across 6522 strokes / 4 scenes via Python diff).
+- **Analog yoke controls work out of the gate** — auto-calibrating, no setup required.
+
+Upstream's work — the SW MiSTer port, the original AVG state machine, the framebuffer pipeline, the audio chain, the OSD options, and the entire README following the divider below — is Videodr0me's. Detailed delta:
 
 ## What's Videodr0me's
 
@@ -41,9 +47,16 @@ Lesson: Videodr0me's triple-buffer pipeline was designed and tested for the per-
 
 The diff workflow is what found and validated all three math bugs above. Three iterations of "diff → identify pattern → fix Python → re-diff" reduced total divergence from 939 billion to 0.
 
-**Empire Strikes Back scaffolding** (`rtl/slapstic.vhd`, `releases/Empire Strikes Back.mra`)
+**Empire Strikes Back integration** (`rtl/slapstic.vhd`, `releases/Empire Strikes Back.mra`, `mod_esb` plumbing)
 
-ESB runs on physically identical hardware to Star Wars per MAME's `esb_main_map` — same AVG (same PROM CRC), same mathbox interface, same audio chain, same inputs. The new work is concentrated in two areas: the Atari slapstic 101 copy-protection chip (imported from d18c7db's GPL-3 Gauntlet_FPGA core) and a bigger banked-ROM layout. The MRA exists; the slapstic is in `files.qip`; the memory-map integration in `starwars.sv` + `Arcade-StarWars.sv` is the remaining work.
+ESB runs on physically identical hardware to Star Wars per MAME's `esb_main_map` — same AVG (same PROM CRC), same mathbox interface, same audio chain, same inputs. Selectable at runtime via the MRA's `<rom index="1">` byte (no rebuild required to switch games). What landed:
+
+- Atari slapstic 137412-101 copy-protection chip, instantiated from d18c7db's GPL-3 Gauntlet_FPGA port of MAME's state machine. Type 101 selected at runtime.
+- 32 KB slapstic ROM (4 banks × 8 KB) mapped at CPU `$8000-$9FFF`.
+- 64 KB ESB main ROM with the default bank2 CPU mapping (file low halves at `$6000-$7FFF`, `$A000-$FFFF`).
+- `mod_esb` selector in `Arcade-StarWars.sv` reads `ioctl_index=1`. Default = Star Wars; MRA byte = 1 selects ESB. SW path is unchanged when `mod_esb=0`.
+
+Known TODOs gated on hardware result: bank2 alternate page (CPU `$A000-$FFFF` ROM_CONTINUE high halves, needed for late-game features), audio ROM widening (SW 16 KB → ESB 32 KB).
 
 ---
 

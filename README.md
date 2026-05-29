@@ -1,3 +1,7 @@
+> **derpyder fork** of [Videodr0me/Arcade-StarWars_MiSTer](https://github.com/Videodr0me/Arcade-StarWars_MiSTer). The visible rendering work, the AVG state machine, the framebuffer pipeline, the audio chain, and most of the README below are Videodr0me's. This fork extends the AVG drawer to be MAME-bit-exact, adds a sim infrastructure that diffs HDL math against MAME, and fixes a framebuffer race that produced visible flicker. See [Fork delta](#fork-delta) near the bottom for details.
+
+---
+
 # Star Wars (Arcade, 1983) for MiSTer FPGA
 
 An FPGA implementation of Atari's classic 1983 color vector arcade game **Star Wars** for the [MiSTer FPGA](https://github.com/MiSTer-devel/Main_MiSTer/wiki) platform.
@@ -181,9 +185,54 @@ The `sys/` directory contains the standard MiSTer framework. All core-specific R
 
 ---
 
+## Fork delta
+
+This section documents what changed in this fork relative to Videodr0me's upstream `main`. Everything not listed here is upstream.
+
+### What's Videodr0me's
+
+- Original SW MiSTer port (CPU, mathbox, AVG state machine, audio chain, slapstic, NVRAM)
+- `vector_fb_ddram.sv` triple-buffer DDR3 framebuffer + MISTER_FB display path
+- Black Widow drawer heritage and the original analytic-endpoint Bresenham rewrite
+- All hardware peripheral models (POKEY, TMS5220, TL084, Reticon, etc.)
+- Original OSD options and DIP plumbing
+- Audio filter modelling
+
+### What's in this fork
+
+**HDL math: bit-exact match to MAME 0.287** (`rtl/avg/avg.vhd`, `rtl/avg/vector_drawer.vhd`)
+
+Three bugs in the per-VCTR math were found by running a Python model of our HDL pipeline alongside a Python port of `avg_starwars_device` and diffing the per-stroke endpoint trace. The fixes are:
+
+1. **SVEC opcode cycles** — MAME's `m_op=2` (SVEC, OP1=1) path uses `cycles = 2^(8 - total_shift)` instead of the VCTR `2^(15 - total_shift)`. A 128× difference. Without compensating, every short-vector glyph (= all small text) renders at 128× MAME's size — visible as the "3000% UI text" symptom. Fix: bump effective `total_shift` by 7 for SVEC.
+2. **scale_factor off-by-one** — MAME uses `m_scale ^ 0xff` (range 0..255); the HDL used `256 - m_scale` (range 1..256). The mismatch accumulates and is wildly wrong at `m_scale=255`. Fix: bitwise NOT instead of subtract.
+3. **High total_shift truncation** — MAME's cycles formula keeps producing 8, 4, 2, 1 at `total_shift=12..15`. The HDL `vd_scale` table truncated to zero above 11, dropping ~5% of strokes (the long-normalized small-magnitude ones). Fix: pre-shift `rel_x`/`rel_y` by `(total_shift - 11)` for `total_shift > 11`, use `vd_scale = 1`.
+
+Additionally the `>>3` truncation on `rel_x`/`rel_y` is now applied at the drawer input (matching MAME's `(m_dvx >> 3) ^ 0x200 - 0x200` sign-mapping) and the `vd_scale` table was widened 8× to compensate. The framebuffer pixel pitch is `2^14`, calibrated against MAME's coordinate system.
+
+The Python diff tool (`sim/diff_decoders.py`) verifies 100% per-VCTR exact match across all four captured attract scenes (6522 strokes total).
+
+**Frame timing** (`rtl/starwars.sv`, `rtl/vector_fb_ddram.sv`)
+
+- `FRAME_DONE` was wired directly to `avg_halted`, which fires once per vggo. SW software issues multiple vggos per 60 Hz CRT frame, so the rasterizer was swap-clearing mid-frame and discarding most content. Fix: trigger `FRAME_DONE` on the first `avg_halted` rising edge after each local `vblank` rising edge — frames now contain whole vggos and accumulate the way MAME's `vector_device` does.
+- Same-cycle `vbl_edge` + EOF coincidence in the triple-buffer state machine could pick the buffer that was simultaneously becoming the new `display_buf` as the next clear target, producing a visible black flash. Fix: compute `next_free_buf` against the post-vbl-edge effective `display_buf` instead of the raw value.
+
+**Sim infrastructure** (`sim/`)
+
+- `avg_starwars_mame.py` — MAME-faithful Python AVG decoder (port of `mame_avgdvg_ref.cpp` `avg_starwars_device`) with per-`vg_add_point_buf` trace output
+- `avg_starwars_hdl.py` — Python emulation of our HDL pipeline, sharing the AVG state machine but using HDL drawer math
+- `diff_decoders.py` — per-VCTR side-by-side diff producing a CSV ordered by divergence magnitude
+- `render_mame_faithful.py` / `render_hdl_emulated.py` — PNG renderers using each decoder
+- `tb_drawer.vhd` — stroke-cap latching fix so per-stroke endpoints survive the WALK → IDLE transition
+
+The diff workflow is what found and validated all three math bugs above. Three iterations of "diff → identify pattern → fix Python → re-diff" reduced total divergence from 939 billion to 0.
+
+---
+
 ## Credits & Acknowledgments
 
 - **Original Game:** Mike Hally (project lead), Greg Rivera & Norm Avellar (programming), Jed Margolin (hardware engineering), Ed Rotberg (original concept) — Atari, 1983
+- **Upstream:** [Videodr0me/Arcade-StarWars_MiSTer](https://github.com/Videodr0me/Arcade-StarWars_MiSTer) — the entire MiSTer port this fork builds on
 - **Initial FPGA Foundation:** Jeroen Domburg (Black Widow MiSTer core)
 - **6809 CPU Core:** Greg Miller (Cavnex mc6809e)
 - **MiSTer Platform:** Sorgelig and the MiSTer community

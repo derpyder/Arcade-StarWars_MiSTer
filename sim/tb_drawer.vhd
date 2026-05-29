@@ -205,27 +205,69 @@ begin
         end if;
     end process;
 
-    -- Per-stroke endpoint capture: on each vd_done rising edge, log
-    -- (xout, yout, zout, rgbout) -- this is where the WALK terminated,
-    -- = stroke endpoint pixel.  Lets us compare to MAME's expected
-    -- endpoints per VCTR.
+    -- Per-stroke endpoint capture.  We FRAME each stroke as the window
+    -- [vd_draw rising .. vd_done rising] and latch the last cycle where
+    -- the drawer emitted a visible pixel (zout > 0) inside that window.
+    -- On vd_done rising, write the latched endpoint.
+    --
+    -- Naively logging (xout, yout, zout, rgbout) at vd_done rising gives
+    -- zout=0 for EVERY stroke, because by the time itsdone='1' the
+    -- drawer has already transitioned WALK -> IDLE.  pixel_valid is
+    -- gated to '0' in IDLE, and avg.vhd gates zout by pixel_valid -- so
+    -- the at-done-edge sample is unconditionally invisible.  See
+    -- vector_drawer.vhd:354 (pixel_valid <= '1' when state=WALK) and
+    -- avg.vhd:255 (zout gated by vd_pixel_valid).
+    --
+    -- Skipping strokes with no valid pixel ALSO aligns sim_strokes with
+    -- burndown.py's python_decode(), which only emits entries for
+    -- strokes whose eff_int > 0.  Without this filter the sim/py
+    -- count ratio is ~2x noise (off-FB walks + zero-intensity strokes).
+    --
+    -- prev_done initialises to '1' to match the drawer's reset value
+    -- (itsdone defaults to '1' in vector_drawer.vhd:94) -- otherwise
+    -- we'd see a spurious "rising edge" on the first clock cycle.
     stroke_cap: process(clk)
-        variable line_buf : line;
-        variable prev_done : std_logic := '0';
+        variable line_buf  : line;
+        variable prev_done : std_logic := '1';
+        variable prev_draw : std_logic := '0';
+        variable last_xout : std_logic_vector(10 downto 0) := (others => '0');
+        variable last_yout : std_logic_vector(10 downto 0) := (others => '0');
+        variable last_zout : std_logic_vector(7 downto 0)  := (others => '0');
+        variable last_rgb  : std_logic_vector(2 downto 0)  := (others => '0');
+        variable saw_valid : boolean := false;
     begin
         if rising_edge(clk) then
-            if dbg(13) = '1' and prev_done = '0' then
-                -- vd_done just rose: stroke completed
-                write(line_buf, integer'image(to_integer(signed(xout))));
+            -- New stroke starts at vd_draw rising: clear per-stroke latch.
+            if dbg(14) = '1' and prev_draw = '0' then
+                saw_valid := false;
+            end if;
+
+            -- Inside the stroke window, latch every cycle the drawer
+            -- emits a visible pixel.  Last one wins = stroke endpoint
+            -- (inside FB; for off-FB strokes the last in-FB position).
+            if unsigned(zout) > 0 then
+                last_xout := xout;
+                last_yout := yout;
+                last_zout := zout;
+                last_rgb  := rgbout;
+                saw_valid := true;
+            end if;
+
+            -- vd_done rises: stroke complete.  Dump if it produced any
+            -- visible content.  Strokes that walked entirely off-FB or
+            -- had eff_intens=0 are dropped (matches python_decode).
+            if dbg(13) = '1' and prev_done = '0' and saw_valid then
+                write(line_buf, integer'image(to_integer(signed(last_xout))));
                 write(line_buf, string'(","));
-                write(line_buf, integer'image(to_integer(signed(yout))));
+                write(line_buf, integer'image(to_integer(signed(last_yout))));
                 write(line_buf, string'(","));
-                write(line_buf, integer'image(to_integer(unsigned(zout))));
+                write(line_buf, integer'image(to_integer(unsigned(last_zout))));
                 write(line_buf, string'(","));
-                write(line_buf, integer'image(to_integer(unsigned(rgbout))));
+                write(line_buf, integer'image(to_integer(unsigned(last_rgb))));
                 writeline(stroke_log, line_buf);
             end if;
             prev_done := dbg(13);
+            prev_draw := dbg(14);
         end if;
     end process;
 

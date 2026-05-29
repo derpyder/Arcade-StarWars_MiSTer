@@ -12,18 +12,18 @@ python prep.py
 
 # 2. Analyze (compile) RTL sources -- order matters
 Write-Host "[2/4] Analyzing sources..." -ForegroundColor Cyan
-& $GHDL -a --std=08 dpram_sim.vhd
-& $GHDL -a --std=08 ..\rtl\avg\vector_drawer.vhd
-& $GHDL -a --std=08 ..\rtl\avg\avg.vhd
-& $GHDL -a --std=08 tb_drawer.vhd
+& $GHDL -a --std=08 -frelaxed dpram_sim.vhd
+& $GHDL -a --std=08 -frelaxed ..\rtl\avg\vector_drawer.vhd
+& $GHDL -a --std=08 -frelaxed ..\rtl\avg\avg.vhd
+& $GHDL -a --std=08 -frelaxed tb_drawer.vhd
 
 # 3. Elaborate the testbench
 Write-Host "[3/4] Elaborating tb_drawer..." -ForegroundColor Cyan
-& $GHDL -e --std=08 tb_drawer
+& $GHDL -e --std=08 -frelaxed tb_drawer
 
 # 4. Run -- writes tb_pixel_writes.txt
 Write-Host "[4/4] Simulating..." -ForegroundColor Cyan
-& $GHDL -r --std=08 tb_drawer --stop-time=200ms --ieee-asserts=disable
+& $GHDL -r --std=08 -frelaxed tb_drawer --stop-time=200ms --ieee-asserts=disable
 
 if (Test-Path tb_pixel_writes.txt) {
     $nlines = (Get-Content tb_pixel_writes.txt | Measure-Object -Line).Lines

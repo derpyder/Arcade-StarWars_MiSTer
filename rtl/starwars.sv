@@ -242,23 +242,25 @@ module starwars (
 	wire dn_esb_vec_cs  = mod_esb && dn_wr && (dn_addr >= 25'h1C000) && (dn_addr < 25'h1D000);
 	wire dn_esb_aud_cs  = mod_esb && dn_wr && (dn_addr >= 25'h1E000) && (dn_addr < 25'h26000);
 
-	// Combined: the vec_rom and audio_rom BRAMs are shared between mods,
-	// loaded from either the SW or ESB range depending on which is active.
+	// vec_rom (4KB) is shared between mods (same size/structure; only one
+	// game loads per session).  Audio is NOT shared: SW audio is 16KB,
+	// ESB audio is 32KB with a different low/high CPU mapping -- ESB gets
+	// its own esb_aud_rom, so the SW aud_rom loads from the SW range only.
 	wire dn_vec_cs = dn_sw_vec_cs || dn_esb_vec_cs;
-	wire dn_aud_cs = dn_sw_aud_cs || dn_esb_aud_cs;
+	wire dn_aud_cs = dn_sw_aud_cs;
 
 	// Compute base-relative addresses for each ROM region
 	wire [13:0] dn_banked_addr = dn_addr[13:0];                         // 0x0000 base, naturally aligned
 	wire [14:0] dn_main_addr   = (dn_addr[14:0] - 15'h4000);             // 0x4000 base → 0x0000-0x7FFF
 	wire [11:0] dn_vec_addr    = dn_addr[11:0];                          // 0xC000 or 0x1C000 base — both 4KB-aligned, low 12 bits work
-	wire [13:0] dn_aud_addr    = !mod_esb
-	                              ? (dn_addr[13:0] - 14'h1000)           // SW: 0xD000 base → 0x0000-0x3FFF (16KB)
-	                              : (dn_addr[13:0] - 14'h2000);          // ESB: 0x1E000 base → 0x0000-0x7FFF (32KB; needs 15 bits, see audio_rom widening TODO)
+	wire [13:0] dn_aud_addr    = (dn_addr[13:0] - 14'h1000);             // SW: 0xD000 base → 0x0000-0x3FFF (16KB)
 	wire [11:0] dn_mb_addr     = (dn_addr[11:0] - 12'h100);              // 0x11100 base → 0x000-0xFFF
 
 	// ESB-specific relative addresses
 	wire [15:0] dn_esb_main_addr = dn_addr[15:0];                         // 0x00000-0x0FFFF → 0x0000-0xFFFF
 	wire [14:0] dn_esb_slap_addr = dn_addr[14:0] - 15'h4000;              // 0x14000-0x1BFFF → 0x0000-0x7FFF (32KB)
+	wire [14:0] dn_esb_aud_addr  = dn_addr[14:0] - 15'h6000;              // 0x1E000-0x25FFF → 0x0000-0x7FFF (32KB)
+	                                                                     // (dn_addr[16:0]-0x1E000 fits 15 bits since 0x1E000&0x7FFF=0x6000)
 
 	// Mathbox (Matrix Processor)
 	wire math_run;
@@ -547,13 +549,47 @@ module starwars (
 		.cpu_addr_b(15'h0), .cpu_dout_b()
 	);
 
-	// Audio ROM (16KB: 0x4000 - 0x7FFF, mirrored at 0xC000 - 0xFFFF)
+	// Audio ROM (16KB: 0x4000 - 0x7FFF, mirrored at 0xC000 - 0xFFFF) -- Star Wars.
 	wire [7:0] aud_rom_dout;
 	rom_download #(14) aud_rom (
 		.clk(clk_12),
 		.dn_addr(dn_aud_addr), .dn_data(dn_data), .dn_wr(dn_aud_cs),
 		.cpu_addr_a(aud_addr[13:0]), .cpu_dout_a(aud_rom_dout),
 		.cpu_addr_b(14'h0), .cpu_dout_b() // Unused
+	);
+
+	// ESB audio ROM (32KB = 136031.113 + 136031.112).  ESB's audio map
+	// (MAME esb romset, line 511-514) is NOT a simple 16KB mirror like
+	// SW -- it's two 16KB files each split low/high:
+	//   audio $4000-$5FFF  136031.113 low   (ROM 0x0000-0x1FFF)
+	//   audio $6000-$7FFF  136031.112 low   (ROM 0x4000-0x5FFF)
+	//   audio $C000-$DFFF  136031.113 high  (ROM 0x2000-0x3FFF)
+	//   audio $E000-$FFFF  136031.112 high  (ROM 0x6000-0x7FFF)
+	// The audio 6809's reset vector ($FFFE) lives in 136031.112's high
+	// half.  The previous 16KB SW aud_rom truncated/mis-mapped this, so
+	// the ESB audio CPU read a garbage reset vector and never ran -> no
+	// sound, AND (since the main CPU blocks on the sound-latch handshake
+	// when attract music starts) the main CPU hung ~5s in = freeze.
+	//
+	// BRAM layout (dn_esb_aud loads 113 then 112): 0x0000-0x3FFF = 113,
+	// 0x4000-0x7FFF = 112.  Within each 16KB file: low 8KB = low CPU view,
+	// high 8KB = high CPU view.
+	wire [7:0]  esb_aud_rom_dout;
+	reg  [14:0] esb_aud_rom_cpu_addr;
+	always @(*) begin
+		case (aud_addr[15:13])
+			3'b010:  esb_aud_rom_cpu_addr = {2'b00, aud_addr[12:0]};  // $4000 113 low  -> 0x0000
+			3'b011:  esb_aud_rom_cpu_addr = {2'b10, aud_addr[12:0]};  // $6000 112 low  -> 0x4000
+			3'b110:  esb_aud_rom_cpu_addr = {2'b01, aud_addr[12:0]};  // $C000 113 high -> 0x2000
+			3'b111:  esb_aud_rom_cpu_addr = {2'b11, aud_addr[12:0]};  // $E000 112 high -> 0x6000
+			default: esb_aud_rom_cpu_addr = 15'h0000;
+		endcase
+	end
+	rom_download #(15) esb_aud_rom (
+		.clk(clk_12),
+		.dn_addr(dn_esb_aud_addr), .dn_data(dn_data), .dn_wr(dn_esb_aud_cs),
+		.cpu_addr_a(esb_aud_rom_cpu_addr), .cpu_dout_a(esb_aud_rom_dout),
+		.cpu_addr_b(15'h0), .cpu_dout_b()
 	);
 
 	// Audio RAM (2KB: 0x2000 - 0x27FF)
@@ -808,8 +844,12 @@ module starwars (
 		else if (pokey3_cs) aud_din_mux = pokey3_dout;
 		else if (riot_cs) aud_din_mux = riot_d_out;
 		else if (aud_addr >= 16'h2000 && aud_addr <= 16'h27FF) aud_din_mux = aud_ram_dout;
+		// ESB audio: $4000-$7FFF + $C000-$FFFF map to the 32KB esb_aud_rom
+		// (113/112 low+high halves).  SW path unchanged below.
+		else if (mod_esb && ((aud_addr >= 16'h4000 && aud_addr <= 16'h7FFF) || aud_addr >= 16'hC000))
+			aud_din_mux = esb_aud_rom_dout;
 		else if (aud_addr >= 16'h4000 && aud_addr <= 16'h7FFF) aud_din_mux = aud_rom_dout;
-		else if (aud_addr >= 16'hB000) aud_din_mux = aud_rom_dout; // Mirrored
+		else if (aud_addr >= 16'hB000) aud_din_mux = aud_rom_dout; // SW mirrored
 		else if (aud_addr >= 16'h0800 && aud_addr <= 16'h0FFF) aud_din_mux = soundlatch;
 	end
 	assign aud_din = aud_din_mux;

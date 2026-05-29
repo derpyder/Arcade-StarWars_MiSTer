@@ -1,4 +1,49 @@
-> **derpyder fork** of [Videodr0me/Arcade-StarWars_MiSTer](https://github.com/Videodr0me/Arcade-StarWars_MiSTer). The visible rendering work, the AVG state machine, the framebuffer pipeline, the audio chain, and most of the README below are Videodr0me's. This fork extends the AVG drawer to be MAME-bit-exact, adds a sim infrastructure that diffs HDL math against MAME, and fixes a framebuffer race that produced visible flicker. See [Fork delta](#fork-delta) near the bottom for details.
+# derpyder fork — MAME-bit-exact AVG drawer + Empire Strikes Back scaffolding
+
+This is a fork of [Videodr0me/Arcade-StarWars_MiSTer](https://github.com/Videodr0me/Arcade-StarWars_MiSTer). Upstream's work — the SW MiSTer port, the AVG state machine, the framebuffer pipeline, the audio chain, the OSD options, and the entire README following the divider below — is Videodr0me's. This fork adds three things.
+
+## What's Videodr0me's
+
+- Original SW MiSTer port (CPU, mathbox, AVG state machine, audio chain, slapstic, NVRAM)
+- `vector_fb_ddram.sv` triple-buffer DDR3 framebuffer + MISTER_FB display path
+- Black Widow drawer heritage and the original analytic-endpoint Bresenham rewrite
+- All hardware peripheral models (POKEY, TMS5220, TL084, Reticon, etc.)
+- Original OSD options and DIP plumbing
+- Audio filter modelling
+
+## What's in this fork
+
+**HDL math: bit-exact match to MAME 0.287** (`rtl/avg/avg.vhd`, `rtl/avg/vector_drawer.vhd`)
+
+Three bugs in the per-VCTR math were found by running a Python model of our HDL pipeline alongside a Python port of `avg_starwars_device` and diffing the per-stroke endpoint trace. The fixes are:
+
+1. **SVEC opcode cycles** — MAME's `m_op=2` (SVEC, OP1=1) path uses `cycles = 2^(8 - total_shift)` instead of the VCTR `2^(15 - total_shift)`. A 128× difference. Without compensating, every short-vector glyph (= all small text) renders at 128× MAME's size — visible as the "3000% UI text" symptom. Fix: bump effective `total_shift` by 7 for SVEC.
+2. **scale_factor off-by-one** — MAME uses `m_scale ^ 0xff` (range 0..255); the HDL used `256 - m_scale` (range 1..256). The mismatch accumulates and is wildly wrong at `m_scale=255`. Fix: bitwise NOT instead of subtract.
+3. **High total_shift truncation** — MAME's cycles formula keeps producing 8, 4, 2, 1 at `total_shift=12..15`. The HDL `vd_scale` table truncated to zero above 11, dropping ~5% of strokes (the long-normalized small-magnitude ones). Fix: pre-shift `rel_x`/`rel_y` by `(total_shift - 11)` for `total_shift > 11`, use `vd_scale = 1`.
+
+Additionally the `>>3` truncation on `rel_x`/`rel_y` is now applied at the drawer input (matching MAME's `(m_dvx >> 3) ^ 0x200 - 0x200` sign-mapping) and the `vd_scale` table was widened 8× to compensate. The framebuffer pixel pitch is `2^14`, calibrated against MAME's coordinate system.
+
+The Python diff tool (`sim/diff_decoders.py`) verifies 100% per-VCTR exact match across all four captured attract scenes (6522 strokes total).
+
+**Frame timing — tried and reverted**
+
+The "spread vggos across one CRT frame" approach (vblank-aligned EOF + a triple-buffer same-cycle race fix) was implemented and then reverted at `534f2cb`. With the math fixes in place, each vggo produces correct MAME-equivalent content on its own, so Videodr0me's per-vggo swap rate gives a clean display without needing cross-vggo accumulation. The reroute introduced a 3-4 Hz black flash that was never root-caused (sim of the buffer state machine didn't reproduce it; ground truth would need SignalTap).
+
+Lesson preserved in `docs/HANDOFF.md`: Videodr0me's triple-buffer pipeline was designed and tested for the per-vggo EOF rate. Dropping that rate ~4× exposes timing characteristics they didn't validate. Don't reroute `FRAME_DONE` without a sim of the consequent buffer dynamics.
+
+**Sim infrastructure** (`sim/`)
+
+- `avg_starwars_mame.py` — MAME-faithful Python AVG decoder (port of `mame_avgdvg_ref.cpp` `avg_starwars_device`) with per-`vg_add_point_buf` trace output
+- `avg_starwars_hdl.py` — Python emulation of our HDL pipeline, sharing the AVG state machine but using HDL drawer math
+- `diff_decoders.py` — per-VCTR side-by-side diff producing a CSV ordered by divergence magnitude
+- `render_mame_faithful.py` / `render_hdl_emulated.py` — PNG renderers using each decoder
+- `tb_drawer.vhd` — stroke-cap latching fix so per-stroke endpoints survive the WALK → IDLE transition
+
+The diff workflow is what found and validated all three math bugs above. Three iterations of "diff → identify pattern → fix Python → re-diff" reduced total divergence from 939 billion to 0.
+
+**Empire Strikes Back scaffolding** (`docs/ESB_PLAN.md`, `docs/ESB_INTEGRATION.md`, `rtl/slapstic.vhd`, `releases/Empire Strikes Back.mra`)
+
+ESB runs on physically identical hardware to Star Wars per MAME's `esb_main_map` — same AVG (same PROM CRC), same mathbox interface, same audio chain, same inputs. The new work is concentrated in two areas: the Atari slapstic 101 copy-protection chip (imported from d18c7db's GPL-3 Gauntlet_FPGA core) and a bigger banked-ROM layout. The MRA exists; the slapstic is in `files.qip`; the memory-map integration in `starwars.sv` + `Arcade-StarWars.sv` is the remaining work.
 
 ---
 
@@ -182,51 +227,6 @@ The project uses **Quartus Prime Lite** targeting the **Cyclone V** on the Teras
 3. The output `Arcade-StarWars.rbf` is generated in `output_files/`
 
 The `sys/` directory contains the standard MiSTer framework. All core-specific RTL is in `rtl/`.
-
----
-
-## Fork delta
-
-This section documents what changed in this fork relative to Videodr0me's upstream `main`. Everything not listed here is upstream.
-
-### What's Videodr0me's
-
-- Original SW MiSTer port (CPU, mathbox, AVG state machine, audio chain, slapstic, NVRAM)
-- `vector_fb_ddram.sv` triple-buffer DDR3 framebuffer + MISTER_FB display path
-- Black Widow drawer heritage and the original analytic-endpoint Bresenham rewrite
-- All hardware peripheral models (POKEY, TMS5220, TL084, Reticon, etc.)
-- Original OSD options and DIP plumbing
-- Audio filter modelling
-
-### What's in this fork
-
-**HDL math: bit-exact match to MAME 0.287** (`rtl/avg/avg.vhd`, `rtl/avg/vector_drawer.vhd`)
-
-Three bugs in the per-VCTR math were found by running a Python model of our HDL pipeline alongside a Python port of `avg_starwars_device` and diffing the per-stroke endpoint trace. The fixes are:
-
-1. **SVEC opcode cycles** — MAME's `m_op=2` (SVEC, OP1=1) path uses `cycles = 2^(8 - total_shift)` instead of the VCTR `2^(15 - total_shift)`. A 128× difference. Without compensating, every short-vector glyph (= all small text) renders at 128× MAME's size — visible as the "3000% UI text" symptom. Fix: bump effective `total_shift` by 7 for SVEC.
-2. **scale_factor off-by-one** — MAME uses `m_scale ^ 0xff` (range 0..255); the HDL used `256 - m_scale` (range 1..256). The mismatch accumulates and is wildly wrong at `m_scale=255`. Fix: bitwise NOT instead of subtract.
-3. **High total_shift truncation** — MAME's cycles formula keeps producing 8, 4, 2, 1 at `total_shift=12..15`. The HDL `vd_scale` table truncated to zero above 11, dropping ~5% of strokes (the long-normalized small-magnitude ones). Fix: pre-shift `rel_x`/`rel_y` by `(total_shift - 11)` for `total_shift > 11`, use `vd_scale = 1`.
-
-Additionally the `>>3` truncation on `rel_x`/`rel_y` is now applied at the drawer input (matching MAME's `(m_dvx >> 3) ^ 0x200 - 0x200` sign-mapping) and the `vd_scale` table was widened 8× to compensate. The framebuffer pixel pitch is `2^14`, calibrated against MAME's coordinate system.
-
-The Python diff tool (`sim/diff_decoders.py`) verifies 100% per-VCTR exact match across all four captured attract scenes (6522 strokes total).
-
-**Frame timing — tried and reverted**
-
-The "spread vggos across one CRT frame" approach (vblank-aligned EOF + a triple-buffer same-cycle race fix) was implemented and then reverted at `534f2cb`. With the math fixes in place, each vggo produces correct MAME-equivalent content on its own, so Videodr0me's per-vggo swap rate gives a clean display without needing cross-vggo accumulation. The reroute introduced a 3-4 Hz black flash that was never root-caused (sim of the buffer state machine didn't reproduce it; ground truth would need SignalTap).
-
-Lesson preserved in `docs/HANDOFF.md`: Videodr0me's triple-buffer pipeline was designed and tested for the per-vggo EOF rate. Dropping that rate ~4× exposes timing characteristics they didn't validate. Don't reroute `FRAME_DONE` without a sim of the consequent buffer dynamics.
-
-**Sim infrastructure** (`sim/`)
-
-- `avg_starwars_mame.py` — MAME-faithful Python AVG decoder (port of `mame_avgdvg_ref.cpp` `avg_starwars_device`) with per-`vg_add_point_buf` trace output
-- `avg_starwars_hdl.py` — Python emulation of our HDL pipeline, sharing the AVG state machine but using HDL drawer math
-- `diff_decoders.py` — per-VCTR side-by-side diff producing a CSV ordered by divergence magnitude
-- `render_mame_faithful.py` / `render_hdl_emulated.py` — PNG renderers using each decoder
-- `tb_drawer.vhd` — stroke-cap latching fix so per-stroke endpoints survive the WALK → IDLE transition
-
-The diff workflow is what found and validated all three math bugs above. Three iterations of "diff → identify pattern → fix Python → re-diff" reduced total divergence from 939 billion to 0.
 
 ---
 

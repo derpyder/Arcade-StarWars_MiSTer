@@ -29,7 +29,7 @@ The Python diff tool (`sim/diff_decoders.py`) verifies 100% per-VCTR exact match
 
 The "spread vggos across one CRT frame" approach (vblank-aligned EOF + a triple-buffer same-cycle race fix) was implemented and then reverted at `534f2cb`. With the math fixes in place, each vggo produces correct MAME-equivalent content on its own, so Videodr0me's per-vggo swap rate gives a clean display without needing cross-vggo accumulation. The reroute introduced a 3-4 Hz black flash that was never root-caused (sim of the buffer state machine didn't reproduce it; ground truth would need SignalTap).
 
-Lesson preserved in `docs/HANDOFF.md`: Videodr0me's triple-buffer pipeline was designed and tested for the per-vggo EOF rate. Dropping that rate ~4× exposes timing characteristics they didn't validate. Don't reroute `FRAME_DONE` without a sim of the consequent buffer dynamics.
+Lesson: Videodr0me's triple-buffer pipeline was designed and tested for the per-vggo EOF rate. Dropping that rate ~4× exposes timing characteristics they didn't validate. Don't reroute `FRAME_DONE` without a sim of the consequent buffer dynamics.
 
 **Sim infrastructure** (`sim/`)
 
@@ -41,7 +41,7 @@ Lesson preserved in `docs/HANDOFF.md`: Videodr0me's triple-buffer pipeline was d
 
 The diff workflow is what found and validated all three math bugs above. Three iterations of "diff → identify pattern → fix Python → re-diff" reduced total divergence from 939 billion to 0.
 
-**Empire Strikes Back scaffolding** (`docs/ESB_PLAN.md`, `docs/ESB_INTEGRATION.md`, `rtl/slapstic.vhd`, `releases/Empire Strikes Back.mra`)
+**Empire Strikes Back scaffolding** (`rtl/slapstic.vhd`, `releases/Empire Strikes Back.mra`)
 
 ESB runs on physically identical hardware to Star Wars per MAME's `esb_main_map` — same AVG (same PROM CRC), same mathbox interface, same audio chain, same inputs. The new work is concentrated in two areas: the Atari slapstic 101 copy-protection chip (imported from d18c7db's GPL-3 Gauntlet_FPGA core) and a bigger banked-ROM layout. The MRA exists; the slapstic is in `files.qip`; the memory-map integration in `starwars.sv` + `Arcade-StarWars.sv` is the remaining work.
 

@@ -110,6 +110,39 @@ begin
         access_addr(16#0090#);   -- bank1 select
         check("enable + stray read + select bank1", "01");
 
+        -- ===== ALTERNATE (devious) banking -- the path ESB uses for game
+        -- control flow (VecFever) and the one never validated.  Type-101:
+        --   enable $8000 -> alt2 $9DFF (offset 0x1DFF) -> alt3 $9B5C+n
+        --   (offset 0x1B5C+n, alt_bank=n, altshift=0) -> alt4 $8080
+        --   (offset 0x0080) commits cur_bank=n.
+        -- $9DFF must NOT match bit1 (0x1DFF & 0x1FF0 = 0x1DF0 != 0x1540) so
+        -- it takes the alt path, not bitwise.  If our slapstic mis-handles
+        -- this, the game's RTS returns to the wrong bank -> bad code/jump ->
+        -- the crash-to-RAM we see ~5 vggos into gameplay.
+        access_addr(16#0000#);   -- enable
+        access_addr(16#1DFF#);   -- alt2
+        access_addr(16#1B5C#);   -- alt3, alt_bank = 0x1B5C & 3 = 0
+        access_addr(16#0080#);   -- alt4 commit
+        check("ALT bank 0 ($9DFF,$9B5C,$8080)", "00");
+
+        access_addr(16#0000#);
+        access_addr(16#1DFF#);
+        access_addr(16#1B5D#);   -- alt_bank = 0x1B5D & 3 = 1
+        access_addr(16#0080#);
+        check("ALT bank 1 ($9B5D)", "01");
+
+        access_addr(16#0000#);
+        access_addr(16#1DFF#);
+        access_addr(16#1B5E#);   -- alt_bank = 2
+        access_addr(16#0080#);
+        check("ALT bank 2 ($9B5E)", "10");
+
+        access_addr(16#0000#);
+        access_addr(16#1DFF#);
+        access_addr(16#1B5F#);   -- alt_bank = 3
+        access_addr(16#0080#);
+        check("ALT bank 3 ($9B5F)", "11");
+
         if fail_count = 0 then
             report "=== ALL SLAPSTIC TYPE-101 CHECKS PASSED ===" severity note;
         else

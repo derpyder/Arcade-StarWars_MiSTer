@@ -1107,6 +1107,35 @@ module starwars (
 		end
 	end
 
+	// =========================================================================
+	// SignalTap probe bus (ESB crash hunt).  Everything checkable in sim is
+	// now validated correct (slapstic params+logic, mathbox halt, AVG halt,
+	// memory map, latch flags) -- the crash (~vggo 5 of gameplay, PC into
+	// non-ROM) is a hardware-timing issue.  These (* keep *) nodes survive
+	// the fitter so the SignalTap node-finder can grab them.
+	//
+	// SignalTap setup (clk = clk_12):
+	//   sample depth:   max (e.g. 8K)
+	//   trigger:        st_crash_fetch == 1   (rising)   = PC left ROM (<$6000)
+	//   trigger position: POST / ~90% pre-trigger, so the buffer holds the
+	//                     instructions BEFORE the bad jump (the JMP/RTS + the
+	//                     pointer/opcode on st_data that fed it).
+	//   probe:          st_addr, st_data, st_rw, st_vma, st_opf,
+	//                   st_slapbs, st_slapcs, st_bank2, st_mathrun
+	// Read-out: st_addr at trigger = where it jumped; the few hundred samples
+	// before show the instruction that jumped there + st_data (the bad opcode
+	// or the pointer it read) + which bank (st_slapbs/st_bank2) was active.
+	(* keep *) wire        st_crash_fetch = main_opfetch & main_vma & (main_addr < 16'h6000);
+	(* keep *) wire [15:0] st_addr    = main_addr;
+	(* keep *) wire [7:0]  st_data    = main_din;     // data bus into the CPU (opcode/operand read)
+	(* keep *) wire        st_rw      = main_rw;
+	(* keep *) wire        st_vma     = main_vma;
+	(* keep *) wire        st_opf     = main_opfetch;
+	(* keep *) wire [1:0]  st_slapbs  = slap_bs;
+	(* keep *) wire        st_slapcs  = slap_cs_active;
+	(* keep *) wire        st_bank2   = rom_bank;
+	(* keep *) wire        st_mathrun = math_run;
+
 	// Rasterizer pixel mux: debug pixel overrides the AVG pixel on debug slots.
 	wire [9:0] rast_x   = dbg_active ? dbg_x      : final_x;
 	wire [9:0] rast_y   = dbg_active ? dbg_y      : final_y;

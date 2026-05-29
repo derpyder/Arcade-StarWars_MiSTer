@@ -91,10 +91,8 @@
 		     directly via the existing dn_mb_cs routing. -->
 		<part crc="b8d0f69d" name="136031.110"></part>
 		<part crc="6a2a4d98" name="136031.109"></part>
-		<!-- (.108 and .107 CRCs TBD — fill in from MAME ROM_START or
-		     compute from the actual files in esb.zip.) -->
-		<part name="136031.108"></part>
-		<part name="136031.107"></part>
+		<part crc="6a76138f" name="136031.108"></part>
+		<part crc="afbf6e01" name="136031.107"></part>
 	</rom>
 	<rom index="2"></rom>
 	<rom index="3"></rom>

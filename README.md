@@ -1,6 +1,6 @@
 # Star Wars + The Empire Strikes Back (Atari 1983 / 1985) for MiSTer FPGA
 
-This is a fork of **[Videodr0me/Arcade-StarWars_MiSTer](https://github.com/Videodr0me/Arcade-StarWars_MiSTer)**. It keeps Videodr0me's excellent Star Wars MiSTer port intact and adds **The Empire Strikes Back (1985)** — the sequel that ran on the same Atari color-vector cabinet — along with a bit-exact AVG drawer rewrite and an auto-calibrating yoke. **One `Arcade-StarWars.rbf` runs both games**, chosen by which `.mra` you launch.
+This is a fork of **[Videodr0me/Arcade-StarWars_MiSTer](https://github.com/Videodr0me/Arcade-StarWars_MiSTer)**. It keeps Videodr0me's excellent Star Wars MiSTer port intact and adds **The Empire Strikes Back (1985)** — the sequel that ran on the same Atari color-vector cabinet — along with a bit-exact AVG drawer rewrite. **One `Arcade-StarWars.rbf` runs both games**, chosen by which `.mra` you launch.
 
 ## Our core vs. Videodr0me's original
 
@@ -9,7 +9,6 @@ This is a fork of **[Videodr0me/Arcade-StarWars_MiSTer](https://github.com/Video
 | **Games** | Star Wars (1983) | Star Wars (1983) **+ The Empire Strikes Back (1985)** |
 | **Slapstic protection** | n/a (Star Wars has no slapstic) | Atari **137412-101** *alternate* ("devious") banking — `rtl/slapstic101.vhd`, a faithful port of MAME's **decapped** type-101. This is the piece that makes The Empire Strikes Back actually playable. |
 | **AVG drawer** | original Black Widow-heritage drawer | **PROM-driven, bit-exact to MAME 0.287** (three per-VCTR math fixes, verified by a Python-vs-MAME stroke diff) |
-| **Analog yoke** | manual range | **auto-calibrating** — no setup |
 | **Star Wars itself** | — | **byte-identical** to upstream (every addition is either Empire-Strikes-Back-gated via `mod_esb`, or a drawer-level fix) |
 
 Everything else — the dual 6809 cores, the mathbox, the audio chain (POKEY / TMS5220 / TL084 / Reticon), the DDR3 framebuffer pipeline, the OSD options, and NVRAM — is Videodr0me's. **Videodr0me's original Star Wars README is preserved in full below the divider.**

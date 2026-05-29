@@ -32,6 +32,11 @@ module starwars (
 	input         osd_audio_filter,   // 1=On (TL084 LPF active), 0=Off (bypass)
 	input         osd_audio_delay,    // 1=On (Reticon delay/stereo active), 0=Off (bypass)
 	input         osd_120hz_mode,     // 1=120Hz (ce_pix always high), 0=60Hz (ce_pix toggles)
+
+	// Mod selector: 0 = Star Wars (default), 1 = Empire Strikes Back.
+	// ESB extends the SW main map with a slapstic-protected page at
+	// $8000-$9FFF and a wider main ROM (64KB vs SW's 32KB).
+	input         mod_esb,
 	
 	// DDRAM Framebuffer Interface
 	output        DDRAM_CLK,
@@ -217,18 +222,43 @@ module starwars (
 	//   0x0D000-0x10FFF: Audio ROM (16KB: 2x 8KB files)
 	//   0x11000-0x110FF: AVG PROM  (256B, skipped — using hardcoded LUT)
 	//   0x11100-0x120FF: Mathbox PROMs (4KB: 4x 1KB files)
-	wire dn_banked_cs = dn_wr && (dn_addr < 25'h04000);
-	wire dn_main_cs   = dn_wr && (dn_addr >= 25'h04000) && (dn_addr < 25'h0C000);
-	wire dn_vec_cs    = dn_wr && (dn_addr >= 25'h0C000) && (dn_addr < 25'h0D000);
-	wire dn_aud_cs    = dn_wr && (dn_addr >= 25'h0D000) && (dn_addr < 25'h11000);
+	// ----- SW-mode dn_addr decoders -----
+	// These fire only when mod_esb=0.  Loading ROMs while ESB is selected
+	// would overwrite the wrong BRAMs if these stayed enabled.
+	wire dn_banked_cs = !mod_esb && dn_wr && (dn_addr < 25'h04000);
+	wire dn_main_cs   = !mod_esb && dn_wr && (dn_addr >= 25'h04000) && (dn_addr < 25'h0C000);
+	wire dn_sw_vec_cs = !mod_esb && dn_wr && (dn_addr >= 25'h0C000) && (dn_addr < 25'h0D000);
+	wire dn_sw_aud_cs = !mod_esb && dn_wr && (dn_addr >= 25'h0D000) && (dn_addr < 25'h11000);
+	// Mathbox PROMs land at the SAME dn_addr offset in both mods (the
+	// ESB MRA pads ahead of slapstic to keep this slot aligned with SW).
 	wire dn_mb_cs     = dn_wr && (dn_addr >= 25'h11100) && (dn_addr < 25'h12100);
+
+	// ----- ESB-mode dn_addr decoders -----
+	// New regions added by the ESB MRA layout.  Main ROM is 64KB (vs
+	// SW's 32KB), the slapstic ROM is 32KB (no SW equivalent), and the
+	// vector / audio ROMs move to higher offsets.
+	wire dn_esb_main_cs = mod_esb && dn_wr && (dn_addr < 25'h10000);
+	wire dn_esb_slap_cs = mod_esb && dn_wr && (dn_addr >= 25'h14000) && (dn_addr < 25'h1C000);
+	wire dn_esb_vec_cs  = mod_esb && dn_wr && (dn_addr >= 25'h1C000) && (dn_addr < 25'h1D000);
+	wire dn_esb_aud_cs  = mod_esb && dn_wr && (dn_addr >= 25'h1E000) && (dn_addr < 25'h26000);
+
+	// Combined: the vec_rom and audio_rom BRAMs are shared between mods,
+	// loaded from either the SW or ESB range depending on which is active.
+	wire dn_vec_cs = dn_sw_vec_cs || dn_esb_vec_cs;
+	wire dn_aud_cs = dn_sw_aud_cs || dn_esb_aud_cs;
 
 	// Compute base-relative addresses for each ROM region
 	wire [13:0] dn_banked_addr = dn_addr[13:0];                         // 0x0000 base, naturally aligned
 	wire [14:0] dn_main_addr   = (dn_addr[14:0] - 15'h4000);             // 0x4000 base → 0x0000-0x7FFF
-	wire [11:0] dn_vec_addr    = dn_addr[11:0];                          // 0xC000 base → low 12 bits
-	wire [13:0] dn_aud_addr    = (dn_addr[13:0] - 14'h1000);             // 0xD000 base → 0x0000-0x3FFF
+	wire [11:0] dn_vec_addr    = dn_addr[11:0];                          // 0xC000 or 0x1C000 base — both 4KB-aligned, low 12 bits work
+	wire [13:0] dn_aud_addr    = !mod_esb
+	                              ? (dn_addr[13:0] - 14'h1000)           // SW: 0xD000 base → 0x0000-0x3FFF (16KB)
+	                              : (dn_addr[13:0] - 14'h2000);          // ESB: 0x1E000 base → 0x0000-0x7FFF (32KB; needs 15 bits, see audio_rom widening TODO)
 	wire [11:0] dn_mb_addr     = (dn_addr[11:0] - 12'h100);              // 0x11100 base → 0x000-0xFFF
+
+	// ESB-specific relative addresses
+	wire [15:0] dn_esb_main_addr = dn_addr[15:0];                         // 0x00000-0x0FFFF → 0x0000-0xFFFF
+	wire [14:0] dn_esb_slap_addr = dn_addr[14:0] - 15'h4000;              // 0x14000-0x1BFFF → 0x0000-0x7FFF (32KB)
 
 	// Mathbox (Matrix Processor)
 	wire math_run;
@@ -392,13 +422,79 @@ module starwars (
 		.cpu_addr_b(14'h0), .cpu_dout_b() // Unused
 	);
 
-	// Main ROM (32KB: 0x8000 - 0xFFFF)
+	// Main ROM (32KB: 0x8000 - 0xFFFF) — Star Wars only.  ESB uses
+	// esb_main_rom instead (different size and CPU-address mapping).
 	wire [7:0] main_rom_dout;
 	rom_download #(15) main_rom (
 		.clk(clk_12),
 		.dn_addr(dn_main_addr), .dn_data(dn_data), .dn_wr(dn_main_cs),
 		.cpu_addr_a(main_addr[14:0]), .cpu_dout_a(main_rom_dout),
 		.cpu_addr_b(15'h0), .cpu_dout_b() // Unused
+	);
+
+	// ESB main ROM (64KB total, the concatenation of 4 x 16KB files).
+	// CPU sees the file LOW halves at $6000-$7FFF, $A000-$BFFF,
+	// $C000-$DFFF, $E000-$FFFF (the "default bank2 view" per MAME's
+	// ROM_LOAD/ROM_CONTINUE layout for esb_main_map).  The HIGH halves
+	// (the ROM_CONTINUE regions) are loaded into the BRAM at offsets
+	// 0x2000, 0x6000, 0xA000, 0xE000 but are NOT yet wired into the CPU
+	// view -- they're the bank2 alternate page which late-game features
+	// access via outlatch[4].  Wiring that path is TODO.
+	wire [7:0] esb_main_rom_dout;
+	reg  [15:0] esb_main_rom_cpu_addr;
+	always @(*) begin
+		// CPU $6000-$7FFF → ROM $0000-$1FFF (file 1 = 136031.101 low half)
+		// CPU $A000-$BFFF → ROM $4000-$5FFF (file 2 = 136031.102 low half)
+		// CPU $C000-$DFFF → ROM $8000-$9FFF (file 3 = 136031.203 low half)
+		// CPU $E000-$FFFF → ROM $C000-$DFFF (file 4 = 136031.104 low half)
+		case (main_addr[15:13])
+			3'b011:  esb_main_rom_cpu_addr = {3'b000, main_addr[12:0]};  // $6000
+			3'b101:  esb_main_rom_cpu_addr = {3'b010, main_addr[12:0]};  // $A000
+			3'b110:  esb_main_rom_cpu_addr = {3'b100, main_addr[12:0]};  // $C000
+			3'b111:  esb_main_rom_cpu_addr = {3'b110, main_addr[12:0]};  // $E000
+			default: esb_main_rom_cpu_addr = 16'h0000;
+		endcase
+	end
+	rom_download #(16) esb_main_rom (
+		.clk(clk_12),
+		.dn_addr(dn_esb_main_addr), .dn_data(dn_data), .dn_wr(dn_esb_main_cs),
+		.cpu_addr_a(esb_main_rom_cpu_addr), .cpu_dout_a(esb_main_rom_dout),
+		.cpu_addr_b(16'h0), .cpu_dout_b()
+	);
+
+	// Slapstic chip (Atari 137412-101) -- watches CPU reads in the
+	// $8000-$9FFF region and outputs a 2-bit bank select.  State machine
+	// tracks the address sequence ("alternate bank select", "bit set",
+	// "valid" patterns) per MAME's slapstic.cpp type 101 spec.
+	// d18c7db's GPL-3 Gauntlet_FPGA port of MAME's state machine
+	// supports type 101 via the runtime I_SLAP_TYPE parameter.
+	//
+	// Per VecFever's ESB analysis (Mar 2020): SW arcade's slapstic
+	// uses 5 small subroutines at the very start of the rom
+	// (8000/8080/8090/80A0/80B0), each just BITA $8000, RTS -- accessing
+	// 80x0 sets a bank, 8000 clears the inner switching mechanism.  The
+	// "devious parts" (caller-pattern overrides at e.g. 9DFE) are
+	// handled by the same state machine; no special-case logic needed
+	// in our wrapper.
+	wire [1:0] slap_bs;
+	wire       slap_cs_active = mod_esb && (main_addr[15:13] == 3'b100);  // $8000-$9FFF
+	SLAPSTIC u_slapstic (
+		.I_CK(clk_12),
+		.I_ASn(~main_vma),
+		.I_CSn(~slap_cs_active),
+		.I_A(main_addr[13:0]),
+		.O_BS(slap_bs),
+		.I_SLAP_TYPE(101)
+	);
+
+	// Slapstic ROM (32KB = 4 banks x 8KB).  CPU sees $8000-$9FFF (8KB)
+	// from one of the 4 banks selected by slap_bs.
+	wire [7:0] slap_rom_dout;
+	rom_download #(15) slap_rom (
+		.clk(clk_12),
+		.dn_addr(dn_esb_slap_addr), .dn_data(dn_data), .dn_wr(dn_esb_slap_cs),
+		.cpu_addr_a({slap_bs, main_addr[12:0]}), .cpu_dout_a(slap_rom_dout),
+		.cpu_addr_b(15'h0), .cpu_dout_b()
 	);
 
 	// Audio ROM (16KB: 0x4000 - 0x7FFF, mirrored at 0xC000 - 0xFFFF)
@@ -452,8 +548,17 @@ module starwars (
 		else if (main_addr >= 16'h4500 && main_addr <= 16'h45FF) main_din_mux = nvram_dout;
 		else if (main_addr >= 16'h4800 && main_addr <= 16'h4FFF) main_din_mux = cpu_math_ram_dout;
 		else if (main_addr >= 16'h5000 && main_addr <= 16'h5FFF) main_din_mux = math_dout;
-		else if (main_addr >= 16'h6000 && main_addr <= 16'h7FFF) main_din_mux = banked_rom_dout;
-		else if (main_addr >= 16'h8000) main_din_mux = main_rom_dout;
+		// ESB takes over $6000-$FFFF with a different memory map:
+		//   $6000-$7FFF  ESB main ROM (file 1 low half)
+		//   $8000-$9FFF  slapstic-protected page (bank selected by slap_bs)
+		//   $A000-$FFFF  ESB main ROM (files 2/3/4 low halves) = bank2
+		//                default view (bank2 alt page TODO).
+		// SW path is unchanged.
+		else if (mod_esb && main_addr >= 16'h6000 && main_addr <= 16'h7FFF) main_din_mux = esb_main_rom_dout;
+		else if (mod_esb && main_addr >= 16'h8000 && main_addr <= 16'h9FFF) main_din_mux = slap_rom_dout;
+		else if (mod_esb && main_addr >= 16'hA000)                          main_din_mux = esb_main_rom_dout;
+		else if (main_addr >= 16'h6000 && main_addr <= 16'h7FFF)            main_din_mux = banked_rom_dout;
+		else if (main_addr >= 16'h8000)                                     main_din_mux = main_rom_dout;
 		else if (adc_cs) main_din_mux = adc_data;
 		
 		// Communication

@@ -31,78 +31,80 @@
 	<num_buttons>7</num_buttons>
 	<buttons default="A,B,Start,R,L,Y,Z" names="Fire L,Shield L,Aux Coin,Coin L,Coin R,Fire R,Shield R"></buttons>
 
-	<!-- mod=1 selects ESB in Arcade-StarWars.sv (TBD: ESB-3 task). -->
+	<!-- mod=1 selects ESB in Arcade-StarWars.sv -->
 	<rom index="1">
 		<part>1</part>
 	</rom>
 
-	<!-- ROM stream (rom index=0).  Layout MUST match starwars.sv's
-	     ESB-mode dn_addr decoders (TBD: ESB-3 task).
-	     File names match the user's esb.zip contents (no .1f / .1jk
-	     suffix variants).
+	<!-- ROM stream (rom index=0).  Layout chosen to keep the AVG state
+	     PROM and mathbox PROMs at the same dn_addr offsets as Star Wars
+	     (0x11000-0x110FF and 0x11100-0x120FF respectively).  That way
+	     avg.vhd's prom_dn_cs and starwars.sv's dn_mb_cs work unchanged
+	     for both mods.
 
-	     Proposed dn_addr layout for ESB (mod_esb=1):
-	       dn 0x00000-0x03FFF  136031.101  (16KB main)
-	       dn 0x04000-0x07FFF  136031.102  (16KB main)
-	       dn 0x08000-0x0BFFF  136031.203  (16KB main, .203 replaces .103)
-	       dn 0x0C000-0x0FFFF  136031.104  (16KB main)
-	       dn 0x10000-0x13FFF  136031.105  (16KB slapstic 0+1)
-	       dn 0x14000-0x17FFF  136031.106  (16KB slapstic 2+3)
-	       dn 0x18000-0x18FFF  136031.111  (4KB vector ROM)
-	       dn 0x19000-0x190FF  136021-105.1l (256B AVG state PROM, SAME as SW)
-	       dn 0x19100-0x191FF  (256B zero pad for alignment)
-	       dn 0x1A000-0x1DFFF  136031.113 + 136031.112 (16KB total audio ROMs)
-	       dn 0x1E000-0x1E0FF  136031.107..110 (4KB mathbox PROMs, 4x1KB)
-	     Total: ~120 KB.  Requires dn_addr width >= 17 bits (already in our
-	     PROM-driven AVG branch).
-	  -->
+	     Actual dn_addr layout produced by this file order:
+	       0x00000-0x0FFFF  main ROM           (4 x 16KB = 64KB)
+	       0x10000-0x10FFF  pad
+	       0x11000-0x110FF  AVG state PROM     (256B, SAME as SW)
+	       0x11100-0x120FF  mathbox PROMs      (4 x 1KB = 4KB, SAME slot as SW)
+	       0x12100-0x13FFF  pad
+	       0x14000-0x1BFFF  slapstic ROM       (32KB, ESB-only)
+	       0x1C000-0x1CFFF  vector ROM         (4KB)
+	       0x1D000-0x1DFFF  pad
+	       0x1E000-0x25FFF  audio ROMs         (2 x 16KB = 32KB)
+	     Total stream size: ~152 KB.  Requires dn_addr width >= 18 bits
+	     (already supported -- starwars.sv routes dn_addr as 25 bits). -->
 	<rom index="0" md5="none" type="merged|nonmerged" zip="esb.zip">
-		<!-- Main CPU ROMs (4 x 16KB = 64KB) -->
+		<!-- Main CPU ROMs (4 x 16KB = 64KB) at 0x00000-0x0FFFF.
+		     CPU sees default bank2 view: file low halves map to
+		     $6000-$7FFF, $A000-$BFFF, $C000-$DFFF, $E000-$FFFF. -->
 		<part crc="ef1e3ae5" name="136031.101"></part>
 		<part crc="62ce5c12" name="136031.102"></part>
 		<part crc="27b0889b" name="136031.203"></part>
 		<part crc="fd5c725e" name="136031.104"></part>
 
-		<!-- Slapstic ROMs (2 x 16KB = 32KB).  Slapstic chip is type 101
-		     (137412-101).  4 banks of 8KB each accessible at CPU $8000-$9FFF
-		     after the state machine commits a bank switch. -->
-		<part crc="ea9e4dce" name="136031.105"></part>
-		<part crc="76d07f59" name="136031.106"></part>
-
-		<!-- Vector ROM (4KB) -->
-		<part crc="b1f9bd12" name="136031.111"></part>
+		<!-- 4 KB pad to land AVG PROM at the SW-shared offset 0x11000. -->
+		<part repeat="4096">00</part>
 
 		<!-- AVG state PROM (256B, IDENTICAL to SW per MAME ROM_START(esb)
-		     line 517: same CRC 82fc3eb2).  This file is in esb.zip too. -->
+		     line 517: same CRC 82fc3eb2). -->
 		<part crc="82fc3eb2" name="136021-105.1l"></part>
 
-		<!-- 256B zero pad to align audio ROMs to 0x1A000. -->
-		<part repeat="256">00</part>
-
-		<!-- Audio CPU ROMs (2 x 16KB = 32KB).  136031.113 is .107 equivalent
-		     in SW; 136031.112 is .208 equivalent.  Audio CPU sees them at
-		     $4000-$5FFF (low half of .113), $6000-$7FFF (low half of .112),
-		     plus their high halves mirrored at $C000-$DFFF / $E000-$FFFF. -->
-		<part crc="24ae3815" name="136031.113"></part>
-		<part crc="ca72d341" name="136031.112"></part>
-
-		<!-- Mathbox PROMs (4 x 1KB = 4KB).  Different content from SW but
-		     same interface — Videodr0me's structural mathbox uses them
-		     directly via the existing dn_mb_cs routing. -->
+		<!-- Mathbox PROMs (4 x 1KB = 4KB) at 0x11100-0x120FF, SAME slot
+		     as SW.  Different content from SW but same interface; the
+		     existing dn_mb_cs decoder loads them with no changes. -->
 		<part crc="b8d0f69d" name="136031.110"></part>
 		<part crc="6a2a4d98" name="136031.109"></part>
 		<part crc="6a76138f" name="136031.108"></part>
 		<part crc="afbf6e01" name="136031.107"></part>
+
+		<!-- ~8 KB pad to align slapstic ROM at clean offset 0x14000. -->
+		<part repeat="7936">00</part>
+
+		<!-- Slapstic ROMs (2 x 16KB = 32KB) at 0x14000-0x1BFFF.
+		     Slapstic chip type 101 (137412-101).  4 banks of 8KB each
+		     accessible at CPU $8000-$9FFF after the state machine
+		     commits a bank switch.  Bank N comes from this ROM at
+		     offset N*0x2000 (0..0x7FFF). -->
+		<part crc="ea9e4dce" name="136031.105"></part>
+		<part crc="76d07f59" name="136031.106"></part>
+
+		<!-- Vector ROM (4KB) at 0x1C000-0x1CFFF. -->
+		<part crc="b1f9bd12" name="136031.111"></part>
+
+		<!-- 4 KB pad to align audio ROMs at 0x1E000. -->
+		<part repeat="4096">00</part>
+
+		<!-- Audio CPU ROMs (2 x 16KB = 32KB) at 0x1E000-0x25FFF.
+		     Audio CPU sees them at $4000-$5FFF (low half of .113),
+		     $6000-$7FFF (low half of .112), plus their high halves
+		     mirrored at $C000-$DFFF / $E000-$FFFF. -->
+		<part crc="24ae3815" name="136031.113"></part>
+		<part crc="ca72d341" name="136031.112"></part>
 	</rom>
 	<rom index="2"></rom>
 	<rom index="3"></rom>
 	<rom index="4"></rom>
 
 	<nvram index="4" size="256"></nvram>
-
-	<remark>Empire Strikes Back port.  Requires mod_esb selector + slapstic
-	chip wiring in starwars.sv (see docs/ESB_PLAN.md + docs/ESB_INTEGRATION.md).
-	Current branch state: SLAPSTIC.vhd imported from d18c7db's Gauntlet_FPGA
-	(GPL-3, same author as our TMS5220.vhd).  Memory-map integration deferred
-	to next session.</remark>
 </misterromdescription>

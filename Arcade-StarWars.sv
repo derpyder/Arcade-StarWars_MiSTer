@@ -417,6 +417,16 @@ wire m_coin2    = joy[8];
 
 wire mod_starwars = 1'b0;
 
+// ESB mod selector.  The MRA's <rom index="1"><part>1</part></rom>
+// drives ioctl_index=1 with data=0x01 when ESB is loaded; mod=0 (the
+// default at boot) selects Star Wars.  Sticky after rom_download
+// completes so the value survives once the MRA is in.
+reg [7:0] mod_byte = 8'h00;
+always @(posedge clk_12) begin
+	if (ioctl_wr && (ioctl_index == 8'd1)) mod_byte <= ioctl_dout;
+end
+wire mod_esb = (mod_byte == 8'h01);
+
 // Video signals
 wire hblank, vblank;
 wire hs, vs;
@@ -464,6 +474,8 @@ starwars starwars_core
 	.osd_audio_filter(~status[5]),   // Inverted: OSD 0=On, 1=Off
 	.osd_audio_delay(~status[6]),    // Inverted: OSD 0=On, 1=Off
 	.osd_120hz_mode(osd_120hz_mode),
+
+	.mod_esb(mod_esb),
 
 	// DDRAM Framebuffer Interface
 	.DDRAM_CLK(DDRAM_CLK),

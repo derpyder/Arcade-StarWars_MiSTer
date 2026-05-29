@@ -108,8 +108,14 @@ architecture Behavioral of vector_drawer is
 
 begin
 
-    -- Combinational: 256 - linear_scale.  9-bit unsigned, range 1..256.
-    scale_factor <= to_unsigned(256, 9) - ('0' & unsigned(linear_scale));
+    -- Combinational: bitwise NOT of linear_scale = 0xff XOR m_scale,
+    -- giving range 0..255.  Bug #2 fix: previously this was 256 -
+    -- linear_scale (range 1..256), which over-scales by 0.4% per stroke
+    -- at m_scale=0 and is wildly wrong at m_scale=255 (MAME: 0 motion,
+    -- HDL: 1 unit).  Per MAME avg_common_strobe3 line 636 the factor
+    -- is (m_scale ^ 0xff).  Verified at exact match by Python diff vs
+    -- MAME on 6522 strokes across 4 scenes.
+    scale_factor <= '0' & (not unsigned(linear_scale));
 
     -- Combinational: widen scale (13-bit unsigned) to 16-bit signed positive.
     -- No shift -- per MAME avg_common_strobe3, the per-VCTR delta is
@@ -177,38 +183,38 @@ begin
                     -- bit 33.  Anything beyond that is off-screen and must
                     -- saturate, NOT wrap -- otherwise we get apparently-
                     -- coherent "Mondrian" geometry from drift-wrap aliasing.
-                    if xpos(33) = '0' and xpos(32 downto 26) /= "0000000" then
+                    if xpos(33) = '0' and xpos(32 downto 25) /= "00000000" then
                         cur_px <= to_signed(2047, 12);     -- pos overflow
-                    elsif xpos(33) = '1' and xpos(32 downto 26) /= "1111111" then
+                    elsif xpos(33) = '1' and xpos(32 downto 25) /= "11111111" then
                         cur_px <= to_signed(-2048, 12);    -- neg overflow
                     else
-                        cur_px <= xpos(33) & xpos(25 downto 15);
+                        cur_px <= xpos(33) & xpos(24 downto 14);
                     end if;
 
-                    if ypos(33) = '0' and ypos(32 downto 26) /= "0000000" then
+                    if ypos(33) = '0' and ypos(32 downto 25) /= "00000000" then
                         cur_py <= to_signed(2047, 12);
-                    elsif ypos(33) = '1' and ypos(32 downto 26) /= "1111111" then
+                    elsif ypos(33) = '1' and ypos(32 downto 25) /= "11111111" then
                         cur_py <= to_signed(-2048, 12);
                     else
-                        cur_py <= ypos(33) & ypos(25 downto 15);
+                        cur_py <= ypos(33) & ypos(24 downto 14);
                     end if;
 
                     -- Same saturation for end_px, end_py from next_target.
-                    if next_target_x(33) = '0' and next_target_x(32 downto 26) /= "0000000" then
+                    if next_target_x(33) = '0' and next_target_x(32 downto 25) /= "00000000" then
                         next_end_px := to_signed(2047, 12);
-                    elsif next_target_x(33) = '1' and next_target_x(32 downto 26) /= "1111111" then
+                    elsif next_target_x(33) = '1' and next_target_x(32 downto 25) /= "11111111" then
                         next_end_px := to_signed(-2048, 12);
                     else
-                        next_end_px := next_target_x(33) & next_target_x(25 downto 15);
+                        next_end_px := next_target_x(33) & next_target_x(24 downto 14);
                     end if;
                     end_px <= next_end_px;
 
-                    if next_target_y(33) = '0' and next_target_y(32 downto 26) /= "0000000" then
+                    if next_target_y(33) = '0' and next_target_y(32 downto 25) /= "00000000" then
                         next_end_py := to_signed(2047, 12);
-                    elsif next_target_y(33) = '1' and next_target_y(32 downto 26) /= "1111111" then
+                    elsif next_target_y(33) = '1' and next_target_y(32 downto 25) /= "11111111" then
                         next_end_py := to_signed(-2048, 12);
                     else
-                        next_end_py := next_target_y(33) & next_target_y(25 downto 15);
+                        next_end_py := next_target_y(33) & next_target_y(24 downto 14);
                     end if;
                     end_py <= next_end_py;
 
@@ -218,20 +224,20 @@ begin
                     -- Note: we recompute "cur" here for the delta calculation
                     -- (since cur_px hasn't been written yet -- this process
                     --  writes its own state on the next clock edge).
-                    if xpos(33) = '0' and xpos(32 downto 26) /= "0000000" then
+                    if xpos(33) = '0' and xpos(32 downto 25) /= "00000000" then
                         dx_v := resize(next_end_px - to_signed(2047, 12), 13);
-                    elsif xpos(33) = '1' and xpos(32 downto 26) /= "1111111" then
+                    elsif xpos(33) = '1' and xpos(32 downto 25) /= "11111111" then
                         dx_v := resize(next_end_px - to_signed(-2048, 12), 13);
                     else
-                        dx_v := resize(next_end_px - (xpos(33) & xpos(25 downto 15)), 13);
+                        dx_v := resize(next_end_px - (xpos(33) & xpos(24 downto 14)), 13);
                     end if;
 
-                    if ypos(33) = '0' and ypos(32 downto 26) /= "0000000" then
+                    if ypos(33) = '0' and ypos(32 downto 25) /= "00000000" then
                         dy_v := resize(next_end_py - to_signed(2047, 12), 13);
-                    elsif ypos(33) = '1' and ypos(32 downto 26) /= "1111111" then
+                    elsif ypos(33) = '1' and ypos(32 downto 25) /= "11111111" then
                         dy_v := resize(next_end_py - to_signed(-2048, 12), 13);
                     else
-                        dy_v := resize(next_end_py - (ypos(33) & ypos(25 downto 15)), 13);
+                        dy_v := resize(next_end_py - (ypos(33) & ypos(24 downto 14)), 13);
                     end if;
                     if dx_v >= 0 then
                         dx_abs <= dx_v;

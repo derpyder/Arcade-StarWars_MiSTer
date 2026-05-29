@@ -169,6 +169,22 @@ architecture rtl of avg is
     signal m_dvy_norm_w    : std_logic_vector(12 downto 0);
     signal m_norm_count_w  : unsigned(3 downto 0);
     signal total_shift     : unsigned(4 downto 0);
+    -- ts_eff = total_shift + 7 when m_op(1) (=OP1) = '1'.  MAME's SVEC
+    -- path (m_op=2, OP1=1) uses cycles_svec = 2^(8 - total_shift)
+    -- whereas VCTR uses cycles_vctr = 2^(15 - total_shift) -- a 128x
+    -- difference (= 2^7).  Compensating via +7 in the vd_scale lookup
+    -- matches MAME's behaviour exactly (verified by avg_starwars_hdl.py
+    -- vs avg_starwars_mame.py per-VCTR diff at 100% match across 6522
+    -- strokes in 4 scenes).  Without this, SVEC strokes (= all small
+    -- text glyphs) rendered 128x oversized = the "3000% UI text" bug.
+    signal ts_eff          : unsigned(5 downto 0);
+    -- vd_shift_amt: extra right-shift on rel_x/rel_y applied at strobe3
+    -- dispatch.  For ts_eff > 11 the vd_scale table can't represent
+    -- 2^(11-ts_eff) (would be fractional / sub-1), so we instead pre-
+    -- shift rel by (ts_eff - 11) and use vd_scale = 1.  Matches MAME's
+    -- cycles formula at high total_shift.  See "BUG #3" in
+    -- avg_starwars_hdl.py for the Python equivalent.
+    signal vd_shift_amt    : unsigned(3 downto 0);
 
     -- Drawer-completion handshake.  The drawer takes many clken ticks per
     -- vector (timer(16:4) >= normscale at 1.5 MHz) but the PROM advances
@@ -324,27 +340,64 @@ begin
     -- =========================================================================
     total_shift <= ('0' & m_norm_count) + ("00" & unsigned(m_bin_scale));
 
+    -- Effective total_shift includes the SVEC bump (bug #1 above).
+    -- One extra bit of width over total_shift since +7 can push it above 5b.
+    ts_eff <= ('0' & total_shift) + to_unsigned(7, 6) when m_op(1) = '1'
+              else ('0' & total_shift);
+
+    -- For ts_eff > 11 we need to pre-shift rel by (ts_eff - 11) (bug #3).
+    -- Saturate at 15 (above that, rel becomes zero regardless given 13-
+    -- bit signed rel widths).
+    vd_shift_proc : process(ts_eff)
+    begin
+        if ts_eff <= 11 then
+            vd_shift_amt <= to_unsigned(0, 4);
+        elsif ts_eff < 16 then
+            vd_shift_amt <= resize(ts_eff - to_unsigned(11, 6), 4);
+        else
+            vd_shift_amt <= to_unsigned(15, 4);
+        end if;
+    end process;
+
     vd_linear_scale <= m_scale;
 
-    -- vd_scale = 2^(8 - total_shift), matching MAME's effective cycles*1/16
-    -- factor per VCTR (see avg_common_strobe3, mame_avgdvg_ref.cpp:636 in
-    -- the starwars-mister fork).  Old table started at 4096 = 2^12 which,
-    -- combined with vector_drawer's *4 multiplier and the missing >>3 on
-    -- rel_x, produced a 64x over-scale: screen-spanning lines for moderate
-    -- dvx values and 1 fps Bresenham walks.  Top of table is now 256.
-    vd_scale_proc : process(total_shift)
+    -- vd_scale = 2^(11 - total_shift), matching MAME's per-VCTR cycles
+    -- factor (cycles = 2^(15 - total_shift)) divided by 16 (the >>4 at the
+    -- end of avg_common_strobe3, mame_avgdvg_ref.cpp:636).  With the >>3
+    -- truncation now applied to rel_x/rel_y above, vd_scale absorbs the
+    -- remaining factor: HDL delta = (m_dvx>>3) * (255-m_scale) * vd_scale
+    -- matches MAME's delta = (m_dvx>>3) * cycles * (255-m_scale) / 16.
+    --
+    -- Old table (top=256, valid up to total_shift=8) under-rendered any
+    -- VCTR with norm_count + bin_scale > 8 -- specifically the bin_scale>=3
+    -- glyph-decoration strokes (e.g. scbe/bs3 logo, sc6f/bs3 intro text).
+    -- New table valid through total_shift=11; remaining underflow window
+    -- (12..15) is the small-stroke regime where MAME also produces near-
+    -- sub-pixel deltas.  This addresses what was tracked as BUG-2.
+    -- vd_scale lookup now indexed by ts_eff (= total_shift + 7 for SVEC).
+    -- For ts_eff > 11 the table outputs 1 and the drawer applies an
+    -- additional right-shift via vd_shift_amt -- equivalent to MAME's
+    -- cycles in the (8..1) range at high ts.  For ts_eff > 15 we drop
+    -- the stroke (vd_scale = 0).  Verified against MAME at per-VCTR
+    -- exact match on 6522 strokes (4 scenes).
+    vd_scale_proc : process(ts_eff)
     begin
-        case to_integer(total_shift) is
-            when 0  => vd_scale <= "0000100000000";  -- 256
-            when 1  => vd_scale <= "0000010000000";  -- 128
-            when 2  => vd_scale <= "0000001000000";  --  64
-            when 3  => vd_scale <= "0000000100000";  --  32
-            when 4  => vd_scale <= "0000000010000";  --  16
-            when 5  => vd_scale <= "0000000001000";  --   8
-            when 6  => vd_scale <= "0000000000100";  --   4
-            when 7  => vd_scale <= "0000000000010";  --   2
-            when 8  => vd_scale <= "0000000000001";  --   1
-            when others => vd_scale <= (others => '0');  -- sub-pixel: skip
+        case to_integer(ts_eff) is
+            when 0  => vd_scale <= "0100000000000";  -- 2048
+            when 1  => vd_scale <= "0010000000000";  -- 1024
+            when 2  => vd_scale <= "0001000000000";  --  512
+            when 3  => vd_scale <= "0000100000000";  --  256
+            when 4  => vd_scale <= "0000010000000";  --  128
+            when 5  => vd_scale <= "0000001000000";  --   64
+            when 6  => vd_scale <= "0000000100000";  --   32
+            when 7  => vd_scale <= "0000000010000";  --   16
+            when 8  => vd_scale <= "0000000001000";  --    8
+            when 9  => vd_scale <= "0000000000100";  --    4
+            when 10 => vd_scale <= "0000000000010";  --    2
+            when 11 => vd_scale <= "0000000000001";  --    1
+            -- ts_eff 12..15 use vd_scale=1 + drawer-side right-shift
+            when 12 | 13 | 14 | 15 => vd_scale <= "0000000000001";
+            when others => vd_scale <= (others => '0');  -- drop stroke
         end case;
     end process;
 
@@ -521,8 +574,37 @@ begin
                                     -- draw pulse doesn't clobber this one
                                     -- mid-step (MAME's cycle scheduler does
                                     -- this implicitly; we need explicit sync).
-                                    vd_rel_x <= m_dvx;
-                                    vd_rel_y <= m_dvy;
+                                    -- MAME avg_common_strobe3 (line 636 of
+                                    -- mame_avgdvg_ref.cpp) shifts m_dvx right
+                                    -- by 3 unsigned BEFORE the XOR/sub sign-
+                                    -- mapping.  The HDL was previously feeding
+                                    -- raw m_dvx (13-bit) directly into the
+                                    -- drawer's signed multiply, then claimed
+                                    -- to compensate by shrinking the vd_scale
+                                    -- table 8x.  That works for large dvx
+                                    -- magnitudes but produces SPURIOUS visible
+                                    -- displacement for small magnitudes (1..7)
+                                    -- that MAME truncates to zero -- a non-
+                                    -- trivial number of glyph-decoration
+                                    -- strokes per frame.  At bit-15 framebuffer
+                                    -- pitch the spurious displacement rounded
+                                    -- off; at bit-14 it became visible mess.
+                                    --
+                                    -- Faithful port: take m_dvx(12 downto 3)
+                                    -- as a 10-bit signed value (bit 12 = sign,
+                                    -- matching MAME's (m_dvx>>3) ^ 0x200 -
+                                    -- 0x200 result) and sign-extend to 13 bits.
+                                    -- Then right-shift by vd_shift_amt for
+                                    -- ts_eff > 11 (bug #3 -- handles MAME's
+                                    -- cycles=8,4,2,1 at ts=12..15).  shift_right
+                                    -- on signed does arithmetic shift, preserves
+                                    -- sign correctly.
+                                    vd_rel_x <= std_logic_vector(shift_right(
+                                        resize(signed(m_dvx(12 downto 3)), 13),
+                                        to_integer(vd_shift_amt)));
+                                    vd_rel_y <= std_logic_vector(shift_right(
+                                        resize(signed(m_dvy(12 downto 3)), 13),
+                                        to_integer(vd_shift_amt)));
                                     vd_draw  <= '1';
                                     m_wait   <= W_JUST_STARTED;
                                 end if;

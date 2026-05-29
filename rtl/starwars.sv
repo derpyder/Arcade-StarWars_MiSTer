@@ -826,7 +826,58 @@ module starwars (
 
 	wire beam_in_bounds = (new_x >= 0 && new_x < 980) && (new_y >= 0 && new_y < 700);
 
-	// Vector to Raster Conversion
+	// Vector to Raster Conversion.
+	//
+	// FRAME_DONE drives the rasterizer's draw->ready->display buffer-swap
+	// cycle (and the post-swap clear of the new draw buffer).  Wiring it
+	// to avg_halted directly swaps once per vggo -- SW software issues
+	// multiple vggos per 60 Hz CRT frame (250 Hz IRQ + game-loop vggos),
+	// so the new buffer was being cleared mid-frame and only the last
+	// vggo's strokes survived.  MAME's vector_device accumulates
+	// m_vector_list across ALL vggos in a 16 ms refresh and renders
+	// the union; we need to match that.
+	//
+	// First attempt wired FRAME_DONE directly to local vblank.  That
+	// accumulated correctly per frame but produced flicker because VBL
+	// fires async to vggo execution -- when VBL hits mid-vggo, the EOF
+	// gets queued INTO the FIFO between that vggo's pixels.  First half
+	// of the vggo lands in frame N's buffer, second half in frame N+1's.
+	// SW re-issues vggos with slight phase drift relative to VBL each
+	// frame, so the split point shifts and content jitters = flicker.
+	//
+	// Correct alignment: trigger swap on the FIRST avg_halted rising
+	// edge AFTER each VBL.  Sticky vbl_pending bit set on VBL rising,
+	// cleared when we observe a vggo-end edge.  Frames now contain
+	// whole vggos -- the split happens at vggo boundaries, not pixel
+	// boundaries.
+	//
+	// CDC: vblank is clk_vid (109 MHz); 3-flop sync chain in clk_12
+	// (12 MHz) so bits [2] and [1] can do edge detection cleanly
+	// (need both prev and current sample of the synced signal).
+	// vblank stays asserted for ~160 scanlines = ~3 ms = ~36000 clk_12
+	// cycles, far longer than the sync delay.  Use LOCAL vblank rather
+	// than FB_VBL so draw->ready precedes the scaler's ready->display
+	// swap; otherwise the just-rendered frame would land one display
+	// interval late.
+	//
+	// avg_halted_d initialises to 1'b1 because the AVG boots in the
+	// halted state (m_running = 0 -> halted = 1).  Initialising to 0
+	// would synthesise a spurious "rising edge" on the cycle after
+	// reset that we'd treat as a vggo-end.
+	reg [2:0] vblank_clk12_sync = 3'b000;
+	reg       avg_halted_d      = 1'b1;
+	reg       vbl_pending       = 1'b0;
+	always @(posedge clk_12) begin
+		vblank_clk12_sync <= {vblank_clk12_sync[1:0], vblank};
+		avg_halted_d <= avg_halted;
+		if (vblank_clk12_sync[1] && !vblank_clk12_sync[2]) begin
+			vbl_pending <= 1'b1;
+		end else if (vbl_pending && avg_halted && !avg_halted_d) begin
+			vbl_pending <= 1'b0;
+		end
+	end
+	wire frame_done_aligned = vbl_pending && avg_halted;
+
 	wire fifo_full_led;
 	vector_fb_ddram rasterizer (
 		.reset(reset),
@@ -839,9 +890,9 @@ module starwars (
 		.RGB(avg_rgb),
 		.BEAM_ENA(1'b1),
 		.BEAM_ON(|avg_z && beam_in_bounds),
-		
+
 		.START_FRAME(avg_go),
-		.FRAME_DONE(avg_halted),
+		.FRAME_DONE(frame_done_aligned),
 		.OSD_FLICKER(osd_raster_flicker),
 		.FIFO_FULL_LED(fifo_full_led),
 

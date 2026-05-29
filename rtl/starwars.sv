@@ -504,19 +504,30 @@ module starwars (
 	//
 	// Reference: MiSTer Arcade-ATetris (slapstic type 101, same chip)
 	// steps its slapstic once per access gated by CS at the CPU clock.
-	// We mirror that: build a one-clk_12-wide strobe per slapstic access,
-	// timed one clk_12 after ce_1m5 so main_addr has settled for the
-	// cycle, and drive I_ASn from it (one falling edge per access).
+	// We mirror that: one strobe pulse per slapstic access.
 	//
-	// NOTE: exact strobe PHASE (which clk_12 within the CPU cycle the
-	// address is valid) is timing the synthesis report can't show -- if
-	// this still mis-tracks on hardware, SignalTap the slapstic I_A /
-	// I_ASn / O_BS before guessing further (per the sync-timing lessons).
+	// STROBE PHASE (grounded in cpu09_cavnex_wrapper.sv, not guessed):
+	// the wrapper latches safe_addr / safe_vma at phase_cnt 1->2 and holds
+	// them stable for the rest of the 1.5 MHz cycle (8 clk_12 phases per
+	// cycle, ce_1m5 marks the phase-0 boundary).  A strobe at phase 0
+	// (ce delayed 1) samples the PREVIOUS cycle's address -- stale.  We
+	// delay ce_1m5 by 4 clk_12 (ce_dly[3]) so the strobe lands around
+	// phase 3-4, comfortably after the phase-2 address latch, when
+	// main_addr is valid and stable.
+	//
+	// The slapstic steps on the I_ASn RISING edge (slapstic.vhd:596),
+	// which here is the END of the slap_strobe pulse (phase ~4) -- still
+	// inside the valid-address window (phases 2-7).  One pulse per access
+	// -> one rising edge -> one state-machine step.  Validated in GHDL:
+	// sim/tb_slapstic.vhd drives this exact access model and confirms the
+	// type-101 bank decode (power-up bank 3 + all four $8000/$80N0
+	// enable+select switches) -- the type-101 path d18c7db never exercised
+	// (its Gauntlet origin is type 104).
 	wire [1:0] slap_bs;
 	wire       slap_cs_active = mod_esb && (main_addr[15:13] == 3'b100);  // $8000-$9FFF
-	reg        ce_1m5_d1;
-	always @(posedge clk_12) ce_1m5_d1 <= ce_1m5;
-	wire       slap_strobe = slap_cs_active && main_vma && ce_1m5_d1;     // 1 clk_12 per access
+	reg  [3:0] ce_dly;
+	always @(posedge clk_12) ce_dly <= {ce_dly[2:0], ce_1m5};
+	wire       slap_strobe = slap_cs_active && main_vma && ce_dly[3];     // 1 clk_12/access, addr settled
 	SLAPSTIC u_slapstic (
 		.I_CK(clk_12),
 		.I_ASn(~slap_strobe),

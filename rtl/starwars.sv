@@ -159,6 +159,7 @@ module starwars (
 		end
 	end
 
+	wire main_opfetch;   // instruction-fetch strobe (= LIC), for the freeze-PC probe
 	cpu09 main_cpu(
 		.clk(clk_12),
 		.ce(ce_1m5),
@@ -171,7 +172,8 @@ module starwars (
 		.halt(1'b0),
 		.irq(main_irq),
 		.firq(main_firq),
-		.nmi(main_nmi)
+		.nmi(main_nmi),
+		.opfetch(main_opfetch)
 	);
 
 	// CPU Audio (6809)
@@ -1040,13 +1042,23 @@ module starwars (
 	// 64 clk_12) so it steals ~1.5% of pixels uniformly rather than biasing
 	// which vectors are lost.  Redrawn each frame; when frozen the last full
 	// frame (with bars showing the pre-freeze polled address) persists.
-	reg [15:0] last_io_addr = 16'h0000;
+	// Freeze-PC probe: latch the PC on every instruction fetch (opfetch=LIC).
+	// When the CPU hangs in a tight loop, last_pc settles on the loop region.
+	// (The earlier last-$4xxx probe was stale -- the poll is outside $4xxx,
+	// and $4000 is unmapped on the main CPU.)
+	reg [15:0] last_pc   = 16'h0000;
+	reg [15:0] frame_ctr = 16'h0000;     // ++ per vggo (frame)
 	always @(posedge clk_12) begin
-		if (mod_esb && main_vma && main_rw && main_addr[15:12] == 4'h4)
-			last_io_addr <= main_addr;
+		if (mod_esb && main_opfetch && main_vma)
+			last_pc <= main_addr;
 	end
 
-	wire [19:0] dbg_val = {mainlatch_full, soundlatch_full, avg_halted, math_run, last_io_addr};
+	// cols 0-15 = last_pc (where the 6809 is executing, LSB first); cols
+	// 16-19 = frame_ctr[3:0].  Watch the rightmost 4 bars LIVE: if they keep
+	// changing, vggos are still firing (stuck loop redraws -> last_pc is the
+	// real stuck PC); if frozen, vggos stopped (last_pc is the pre-freeze PC,
+	// still localizes the ROM region to disassemble).
+	wire [19:0] dbg_val = {frame_ctr[3:0], last_pc};
 
 	reg        dbg_run = 1'b0;
 	reg  [4:0] dbg_bit = 5'd0;     // 0..19
@@ -1064,6 +1076,7 @@ module starwars (
 		dbg_div  <= dbg_div + 8'd1;
 		if (mod_esb && avg_go && !avg_go_d) begin   // START_FRAME: restart bars
 			dbg_run <= 1'b1; dbg_bit <= 5'd0; dbg_row <= 6'd0;
+			frame_ctr <= frame_ctr + 16'd1;          // count vggos
 		end else if (dbg_run && dbg_slot) begin
 			if (dbg_row + 6'd1 >= dbg_h) begin
 				dbg_row <= 6'd0;

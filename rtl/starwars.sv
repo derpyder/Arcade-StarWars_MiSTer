@@ -1053,12 +1053,15 @@ module starwars (
 			last_pc <= main_addr;
 	end
 
-	// cols 0-15 = last_pc (where the 6809 is executing, LSB first); cols
-	// 16-19 = frame_ctr[3:0].  Watch the rightmost 4 bars LIVE: if they keep
-	// changing, vggos are still firing (stuck loop redraws -> last_pc is the
-	// real stuck PC); if frozen, vggos stopped (last_pc is the pre-freeze PC,
-	// still localizes the ROM region to disassemble).
-	wire [19:0] dbg_val = {frame_ctr[3:0], last_pc};
+	// FRAME-CORRELATION readout: the freeze is deterministic (~3s, no input)
+	// = our HW and MAME run identically up to a fixed vggo N, then we die.
+	// Show the ABSOLUTE vggo count so we can read N off a photo, then run
+	// MAME to vggo N and see "what we should be processing" there.
+	//   cols 0-15  = frame_ctr[15:0]  (absolute vggo count, LSB first) = N
+	//   cols 16-19 = last_pc[15:12]    (PC high nibble: 0=RAM/crash, 6..E=ROM)
+	// frame_ctr freezes at N when vggos stop, and the last drawn frame (with
+	// the bars) persists -- so the bars read N directly.
+	wire [19:0] dbg_val = {last_pc[15:12], frame_ctr[15:0]};
 
 	reg        dbg_run = 1'b0;
 	reg  [4:0] dbg_bit = 5'd0;     // 0..19

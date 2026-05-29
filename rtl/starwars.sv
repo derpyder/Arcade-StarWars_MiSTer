@@ -432,26 +432,39 @@ module starwars (
 		.cpu_addr_b(15'h0), .cpu_dout_b() // Unused
 	);
 
-	// ESB main ROM (64KB total, the concatenation of 4 x 16KB files).
-	// CPU sees the file LOW halves at $6000-$7FFF, $A000-$BFFF,
-	// $C000-$DFFF, $E000-$FFFF (the "default bank2 view" per MAME's
-	// ROM_LOAD/ROM_CONTINUE layout for esb_main_map).  The HIGH halves
-	// (the ROM_CONTINUE regions) are loaded into the BRAM at offsets
-	// 0x2000, 0x6000, 0xA000, 0xE000 but are NOT yet wired into the CPU
-	// view -- they're the bank2 alternate page which late-game features
-	// access via outlatch[4].  Wiring that path is TODO.
-	wire [7:0] esb_main_rom_dout;
+	// ESB main ROM (64KB = 4 x 16KB files: 101, 102, 203, 104).
+	//
+	// ESB's main map (MAME esb_main_map + bank configure_entries):
+	//   $6000-$7FFF  bank1  — 136031.101, 2 pages (8KB each)
+	//   $8000-$9FFF  slapstic (separate ROM, see below)
+	//   $A000-$FFFF  bank2  — 102/203/104, 2 pages (24KB each)
+	// BOTH bank1 and bank2 are switched together by outlatch[4]
+	// (MAME wires q_out_cb<4> to set_membank("bank1") AND
+	// append_membank("bank2")).  page 0 = file LOW halves (the reset/
+	// boot view), page 1 = file HIGH halves (ROM_CONTINUE regions, the
+	// main game code).
+	//
+	// In our 64KB BRAM the four files sit at:
+	//   136031.101 -> 0x0000-0x3FFF   (bank1)
+	//   136031.102 -> 0x4000-0x7FFF   (bank2 file 0)
+	//   136031.203 -> 0x8000-0xBFFF   (bank2 file 1)
+	//   136031.104 -> 0xC000-0xFFFF   (bank2 file 2)
+	// Within each 16KB file: low half 0x0000-0x1FFF = page 0, high half
+	// 0x2000-0x3FFF = page 1.  So the page bit lands at BRAM addr[13].
+	//
+	// Found via the MAME-vs-HDL memory-map diff (sim/esb_diff_memmap.py):
+	// the earlier version hardcoded page 0, so ESB booted ($EDEE reset
+	// vector is correct on page 0) but black-screened the instant the
+	// boot code set outlatch[4]=1 to switch into page-1 game code.
+	wire        esb_page = rom_bank;   // = outlatch[4], shared bank1/bank2 page
+	wire [7:0]  esb_main_rom_dout;
 	reg  [15:0] esb_main_rom_cpu_addr;
 	always @(*) begin
-		// CPU $6000-$7FFF → ROM $0000-$1FFF (file 1 = 136031.101 low half)
-		// CPU $A000-$BFFF → ROM $4000-$5FFF (file 2 = 136031.102 low half)
-		// CPU $C000-$DFFF → ROM $8000-$9FFF (file 3 = 136031.203 low half)
-		// CPU $E000-$FFFF → ROM $C000-$DFFF (file 4 = 136031.104 low half)
 		case (main_addr[15:13])
-			3'b011:  esb_main_rom_cpu_addr = {3'b000, main_addr[12:0]};  // $6000
-			3'b101:  esb_main_rom_cpu_addr = {3'b010, main_addr[12:0]};  // $A000
-			3'b110:  esb_main_rom_cpu_addr = {3'b100, main_addr[12:0]};  // $C000
-			3'b111:  esb_main_rom_cpu_addr = {3'b110, main_addr[12:0]};  // $E000
+			3'b011:  esb_main_rom_cpu_addr = {2'b00, esb_page, main_addr[12:0]};  // $6000 bank1 -> 0x0000
+			3'b101:  esb_main_rom_cpu_addr = {2'b01, esb_page, main_addr[12:0]};  // $A000 102   -> 0x4000
+			3'b110:  esb_main_rom_cpu_addr = {2'b10, esb_page, main_addr[12:0]};  // $C000 203   -> 0x8000
+			3'b111:  esb_main_rom_cpu_addr = {2'b11, esb_page, main_addr[12:0]};  // $E000 104   -> 0xC000
 			default: esb_main_rom_cpu_addr = 16'h0000;
 		endcase
 	end

@@ -479,66 +479,33 @@ module starwars (
 		.cpu_addr_b(16'h0), .cpu_dout_b()
 	);
 
-	// Slapstic chip (Atari 137412-101) -- watches CPU reads in the
-	// $8000-$9FFF region and outputs a 2-bit bank select.  State machine
-	// tracks the address sequence ("alternate bank select", "bit set",
-	// "valid" patterns) per MAME's slapstic.cpp type 101 spec.
-	// d18c7db's GPL-3 Gauntlet_FPGA port of MAME's state machine
-	// supports type 101 via the runtime I_SLAP_TYPE parameter.
+	// Slapstic 137412-101 bank-select for the $8000-$9FFF page.  Replaced the old
+	// generic rtl/slapstic.vhd (a translation of an UNCONFIRMED old MAME that could
+	// only do *direct* banking) with rtl/slapstic101.vhd, a faithful port of MAME's
+	// DECAPPED type-101 (full derivation + GHDL test in slapstic101.vhd / tb).
+	// CRITICAL: type-101 ALTERNATE banking (which ESB GAMEPLAY uses — confirmed via
+	// MAME -log over real play: 51 alt sequences reaching banks 0/2) requires the
+	// slapstic to see an access OUTSIDE $8000-$9FFF (the 6809 $FFFF dummy/VMA cycle
+	// = alt2).  So we step it once per 6809 bus cycle with the FULL 16-bit address,
+	// NOT gated to the bank region.  Our mc6809i.v drives ADDR=$FFFF on dummy cycles
+	// and the wrapper forces VMA=1 on reads, so that dummy cycle is on main_addr.
+	// mod_esb keeps it inert for Star Wars (no slapstic; slap_rom not in the mux).
 	//
-	// Per VecFever's ESB analysis (Mar 2020): SW arcade's slapstic
-	// uses 5 small subroutines at the very start of the rom
-	// (8000/8080/8090/80A0/80B0), each just BITA $8000, RTS -- accessing
-	// 80x0 sets a bank, 8000 clears the inner switching mechanism.  The
-	// "devious parts" (caller-pattern overrides at e.g. 9DFE) are
-	// handled by the same state machine; no special-case logic needed
-	// in our wrapper.
-	// The slapstic state machine must advance EXACTLY ONCE per CPU access
-	// to its region.  It tracks the running address sequence (the
-	// alternate/bit-set/valid patterns) and a miscount desyncs the bank.
-	//
-	// Original wiring drove I_ASn = ~main_vma.  The 6809's vma can stay
-	// high across consecutive bus cycles at 1.5 MHz (= 8 clk_12 ticks per
-	// cycle), so it does NOT produce one clean address-strobe edge per
-	// access -- the slapstic missed/merged steps and tracked the wrong
-	// bank.  ESB executes 460+ instructions inside $8000-$9FFF during
-	// attract (verified via MAME PC trace) doing JSR $80x0 / BITA $8000
-	// bank-switch sequences, so a wrong bank lands the CPU's JMP/RTS in
-	// the wrong bank's code = crash = black screen.
-	//
-	// Reference: MiSTer Arcade-ATetris (slapstic type 101, same chip)
-	// steps its slapstic once per access gated by CS at the CPU clock.
-	// We mirror that: one strobe pulse per slapstic access.
-	//
-	// STROBE PHASE (grounded in cpu09_cavnex_wrapper.sv, not guessed):
-	// the wrapper latches safe_addr / safe_vma at phase_cnt 1->2 and holds
-	// them stable for the rest of the 1.5 MHz cycle (8 clk_12 phases per
-	// cycle, ce_1m5 marks the phase-0 boundary).  A strobe at phase 0
-	// (ce delayed 1) samples the PREVIOUS cycle's address -- stale.  We
-	// delay ce_1m5 by 4 clk_12 (ce_dly[3]) so the strobe lands around
-	// phase 3-4, comfortably after the phase-2 address latch, when
-	// main_addr is valid and stable.
-	//
-	// The slapstic steps on the I_ASn RISING edge (slapstic.vhd:596),
-	// which here is the END of the slap_strobe pulse (phase ~4) -- still
-	// inside the valid-address window (phases 2-7).  One pulse per access
-	// -> one rising edge -> one state-machine step.  Validated in GHDL:
-	// sim/tb_slapstic.vhd drives this exact access model and confirms the
-	// type-101 bank decode (power-up bank 3 + all four $8000/$80N0
-	// enable+select switches) -- the type-101 path d18c7db never exercised
-	// (its Gauntlet origin is type 104).
+	// STROBE PHASE (grounded in cpu09_cavnex_wrapper.sv): the wrapper latches
+	// safe_addr/safe_vma at phase_cnt 1->2 and holds them stable for the rest of the
+	// 1.5 MHz cycle (8 clk_12 phases/cycle; ce_1m5 marks the phase-0 edge).  We delay
+	// ce_1m5 by 4 clk_12 (ce_dly[3]) so the step lands ~phase 3-4, after the phase-2
+	// address latch, when main_addr is valid and stable -- one step per bus cycle.
 	wire [1:0] slap_bs;
-	wire       slap_cs_active = mod_esb && (main_addr[15:13] == 3'b100);  // $8000-$9FFF
 	reg  [3:0] ce_dly;
 	always @(posedge clk_12) ce_dly <= {ce_dly[2:0], ce_1m5};
-	wire       slap_strobe = slap_cs_active && main_vma && ce_dly[3];     // 1 clk_12/access, addr settled
-	SLAPSTIC u_slapstic (
-		.I_CK(clk_12),
-		.I_ASn(~slap_strobe),
-		.I_CSn(~slap_cs_active),
-		.I_A(main_addr[13:0]),
-		.O_BS(slap_bs),
-		.I_SLAP_TYPE(101)
+	wire       slap_step = mod_esb && main_vma && ce_dly[3];   // 1 pulse / 6809 bus cycle
+	slapstic101 u_slapstic (
+		.I_CK   (clk_12),
+		.I_STEP (slap_step),
+		.I_RESET(reset),
+		.I_A    (main_addr),       // FULL 16-bit address (in- and out-of-range)
+		.O_BS   (slap_bs)
 	);
 
 	// Slapstic ROM (32KB = 4 banks x 8KB).  CPU sees $8000-$9FFF (8KB)
@@ -1132,7 +1099,7 @@ module starwars (
 	(* keep *) wire        st_vma     = main_vma;
 	(* keep *) wire        st_opf     = main_opfetch;
 	(* keep *) wire [1:0]  st_slapbs  = slap_bs;
-	(* keep *) wire        st_slapcs  = slap_cs_active;
+	(* keep *) wire        st_slapcs  = mod_esb && (main_addr[15:13] == 3'b100); // in slapstic region
 	(* keep *) wire        st_bank2   = rom_bank;
 	(* keep *) wire        st_mathrun = math_run;
 

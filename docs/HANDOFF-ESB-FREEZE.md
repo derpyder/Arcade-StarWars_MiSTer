@@ -1,110 +1,92 @@
-# ESB bring-up — freeze debug handoff (2026-05-29)
+# ESB freeze — ROOT CAUSE FOUND & FIXED (2026-05-29)
 
 **Repo:** `derpyder/Arcade-StarWars_ESB_MiSTer` (private), branch `esb-port`,
-local `D:\deck\fpga\starwars\sw\starwars-videodr0me\`. HEAD `d72ba1e`.
-**Read this + `docs/HANDOFF.md` (SW ship) + `docs/ESB_INTEGRATION.md`.**
+local `D:\deck\fpga\starwars\sw\starwars-videodr0me\`.
+**Supersedes the earlier "hardware-timing-realm → do SignalTap" conclusion.**
 
-## TL;DR — ESB is ~95% there
+## TL;DR — it was the slapstic, and it's fixed (pending HW test)
 
-ESB boots, and **renders a complete, correct, full-color Hoth wave-1 gameplay
-frame** (score, 3 SHIELDS gauge, "1 WAVE / PROBOTS 6", red mission text, HUD
-box, two Probots, two 3D walkers, starfield, laser). Photo proof:
-`output_files/freeze.JPG`. **Music + SFX work.** Then it **crashes ~5 vggos
-into gameplay** (deterministic, even with no input), leaving the clean frame
-frozen while music keeps playing. The entire rendering + audio stack works.
-One CPU-progress crash remains.
+ESB gameplay crashes ~5 vggos in because the **slapstic 137412-101 could not do
+ALTERNATE ("devious") banking** — only direct banking. Attract uses only direct
+bank-1↔3 (so it boots & renders one correct frame); gameplay uses *alternate*
+banking to reach banks 0/2, the first alt-switch fails, the bank stays wrong, and
+the 6809 jumps through a bad pointer into non-ROM. Confirmed against MAME.
 
-## What's fixed (all on esb-port, pushed)
+**Fix:** new `rtl/slapstic101.vhd` (faithful port of MAME's **decapped** type-101)
+replacing the old generic `rtl/slapstic.vhd`, stepped once per 6809 bus cycle with
+the **full 16-bit address** so it can see the out-of-range `$FFFF` dummy cycle the
+alt sequence pivots on. GHDL-verified (11/11). `mod_esb`-gated → SW byte-identical.
 
-- **Slapstic strobe** (`starwars.sv`): one-pulse-per-access via `ce_dly[3]`
-  (the wrapper latches addr at phase 2; strobe at phase ~3-4). Got it
-  booting/rendering. The earlier `~main_vma` strobe miscounted.
-- **ESB audio ROM** (`starwars.sv` `esb_aud_rom`, 32KB): 113/112 low+high
-  split; audio 6809 reset vector ($FFFE) lands in 112 high. Fixed no-sound.
-- **AVG drawer math** (inherited from SW ship): SVEC cycles, `scale_factor =
-  m_scale^0xff`, high-total_shift, bit-14 pitch — MAME-bit-exact rendering.
-- **Memory map**: `mod_esb` selector, `esb_main_rom` (64KB, bank1/bank2 page
-  via `outlatch[4]`), slapstic + slap_rom. Reverted: the BUG-3 vggo-aligned EOF.
+## How it was confirmed (MAME is the oracle — reusable method)
 
-## What's VALIDATED CORRECT in sim (do not re-investigate)
+1. The old `rtl/slapstic.vhd` is a translation of an **old, UNCONFIRMED** MAME. Its
+   type-101 `alt1 = (a&0x007F)==0xFFFF` is the literal `UNKNOWN` placeholder — can
+   NEVER match. Decapped MAME (`src/mame/atari/slapstic.{cpp,h}`, in
+   `sim/mame-ref/`) uses `alt1=(a&0x1F00)==0x1E00`, `alt2=(a&0x1FFF)==0x1FFF`.
+2. Decapped MAME: for 101/102 the **2nd alt access must be OUTSIDE $8000-$9FFF**
+   ("hits a 6809 dummy vma access") and MAME taps the **whole address space**. The
+   old HDL only ever strobed the slapstic in-range → architecturally incapable.
+3. `mame.exe esb -log` over **real gameplay** (user played ~15s): **51 complete
+   alt-start/valid/select/commit sequences** + banks 0/2 used. Attract (44s):
+   **0** alt, only direct bank-1↔3. → alt banking is gameplay-only = the crash.
+4. Mechanism (disasm of bank1 `$9DFE`): `LDA ,X` through a computed pointer, then
+   `ASLA` at `$9E00` (opcode addr `$9E00`=alt1; its dummy cycle drives `$FFFF`=alt2).
+   Runtime-data-driven → invisible to static analysis, hence MAME-dynamic confirmed.
+5. Feasibility: `rtl/cpu/mc6809i.v` defaults `addr_nxt=16'hFFFF` on dummy cycles
+   and the wrapper forces `VMA=1` on reads → the `$FFFF` alt2 trigger is already on
+   `main_addr`. No CPU-core change needed.
 
-Everything checkable in clean-stimulus sim is proven correct:
+## The fix (files changed)
+
+- **`rtl/slapstic101.vhd`** (NEW) — decapped MAME type-101 state machine
+  (idle/active/alt_valid/alt_select/alt_commit/bit_load/bit_set), full 16-bit addr,
+  inside/outside aware. Self-documented with the derivation.
+- **`rtl/starwars.sv`** — instantiate `slapstic101`; `slap_step = mod_esb &&
+  main_vma && ce_dly[3]` steps it once per bus cycle with **full `main_addr`** (no
+  in-range gate). Removed `slap_cs_active`/`slap_strobe`/`SLAPSTIC`. Fixed the
+  `st_slapcs` SignalTap probe (recomputes in-range locally).
+- **`files.qip`** — adds `rtl/slapstic101.vhd` (old `slapstic.vhd` left in, unused).
+- **`sim/tb_slapstic101.vhd`** (NEW) — GHDL TB. 11/11 pass incl. the NEGATIVE case:
+  without the `$FFFF` dummy there is NO bank switch (reproduces the old bug); with
+  it, banks switch correctly (alt→0/2/3, direct→0/1/2/3, power-up 3).
+- **`sim/mame-ref/`** (NEW) — the decapped MAME slapstic + starwars driver source
+  used as ground truth. Keep for derivation/audit.
+
+GHDL: `C:\Users\mattl\bin\ghdl\bin\ghdl.exe -a --std=08 -frelaxed ../rtl/slapstic101.vhd tb_slapstic101.vhd` then `-e` then `-r tb_slapstic101 --stop-time=20us`.
+
+## Residual risk → THE hardware test
+
+Logic is proven; **integrated runtime is NOT yet**. It hinges on our Cavnex 6809
+emitting the same cycle-level bus stream as MAME for ESB's convoluted
+computed-pointer access pattern (esp. the `$FFFF` dummy landing in the right cycle).
+Only confirmable on hardware (or a full-system CPU+slapstic+ROM GHDL sim).
+
+**HW test:** build → stage `output_files/Arcade-StarWars.rbf` → run ESB → coin →
+select wave → play. If it no longer crashes ~5 vggos in (the clean Hoth frame keeps
+animating) → **fixed**.
+
+**If it STILL crashes:** the slapstic LOGIC is right (MAME-verified), so the gap is
+cycle-accuracy of our 6809 vs MAME at `$9DFE/$9E00`. Next: full-system GHDL sim of
+that routine, or SignalTap the bus around `$9E00` (probe `st_addr/st_slapbs/st_vma`,
+trigger on `main_addr==16'h9E00`) and compare the cycle sequence to MAME's.
+
+## Still VALIDATED CORRECT in sim (do not re-investigate)
 
 | Subsystem | Evidence |
 |---|---|
-| Slapstic **params** | verified vs authoritative MAME `slapstic101` (svn2github/mameplus) — bankstart 3, banks 80/90/a0/b0, alt/bit tables ALL match. The d18c7db "(NOT confirmed)" was unfounded. |
-| Slapstic **logic** | `sim/tb_slapstic.vhd` — power-up, basic banking, AND alternate/devious banking (alt bank 0/1/2/3) all pass. |
-| Mathbox | `sim/mathbox_halt_check.py` — all 256 ESB microcode entries reach HALT (no hang). Microcode differs from SW but our PROM-driven increment-only model handles it. |
-| AVG | MAME-faithful decoder halts on ESB vector dump (2364 strokes, incl. 45 white). |
-| Memory map | `sim/esb_diff_memmap.py` — bit-exact to MAME, both bank pages + slapstic bank 3. |
-| `$4401` latch flags | match MAME (bit7=sound pending, bit6=main pending). |
+| AVG drawer | MAME-bit-exact (SW ship; 100% match 4 scenes). |
+| Memory map | `sim/esb_diff_memmap.py` bit-exact, both bank pages + slapstic bank 3. Our `slap_rom` bank mapping matches MAME `configure_entries(0,4,base+0x14000,0x2000)`. |
+| Mathbox | halts on all 256 ESB ucode entries; MAME `run_mproc` ref in `sim/mame-ref/starwars_m.cpp` (divider 15-iter + `ACC+=((A-B)<<1)*C)<<1` consistent with HDL). Walkers render → core transforms OK. |
 | Audio | music plays = audio CPU alive. |
-
-## The crash — what we know
-
-- Deterministic, **~vggo 5 from wave-select** (ESB runs ~20 vggo/s, so ~0.25s
-  into gameplay), no input needed.
-- The PC lands in **non-ROM** (overlay read $0400 then $4xxx across runs).
-- Renders a full correct frame FIRST, then dies → it's a **bad computed jump**
-  at gameplay start, not a render bug.
-- Music continues, frame frozen → the main 6809 is dead/looping; audio CPU fine.
-
-**Since everything sim-checkable is clean, the bug is hardware-timing-realm**
-(a wrong pointer/jump-target produced only under real timing/sequences). The
-two things sim CANNOT reach: (a) the slapstic STROBE delivering a wrong access
-*sequence* during devious banking on real HW (logic is right, but my TB used
-clean stimulus); (b) the mathbox computing a wrong RESULT (not hang) for an
-ESB-specific op used as a pointer — the one validation gap (only "halts" proven,
-not "correct value").
-
-## NEXT STEP — SignalTap (set up, awaiting a build)
-
-Commit `d72ba1e` added `(* keep *)` probe nodes + a crash trigger in
-`starwars.sv`. **The next action is: build WITH SignalTap, capture the crash.**
-
-SignalTap setup (clk = `clk_12`, depth 8K):
-- **Trigger:** `st_crash_fetch` rising (= `main_opfetch & main_vma &
-  main_addr<$6000` = PC left ROM). Trigger position ~90% pre-trigger.
-- **Probes:** `st_addr[15:0]`, `st_data[7:0]`, `st_rw`, `st_vma`, `st_opf`,
-  `st_slapbs[1:0]`, `st_slapcs`, `st_bank2`, `st_mathrun`.
-- Run ESB: coin → fire-once-to-select-wave → hands off.
-
-Readout: `st_addr` at trigger = jump target; the samples just before show the
-`JMP`/`RTS` that did it + `st_data` (the bad opcode/pointer it followed) +
-`st_slapbs`/`st_bank2` (which bank was active). That names the bad pointer's
-source. (`st_crash_fetch` never fires for SW — SW never fetches <$6000 — so
-SignalTap-on is inert for Star Wars.)
-
-## On-screen overlay (already in the build, mod_esb-gated, SW byte-identical)
-
-Bottom-of-screen bars: cols 0-15 = `frame_ctr` (vggo count, **resets on fire =
-wave-select**), cols 16-19 = `last_pc[15:12]` (PC high nibble). **Caveat:** the
-`opfetch` PC capture is UNRELIABLE (catches operand/LIC addresses, not a clean
-PC) — that's why we pivoted to SignalTap. The frame_ctr (N) IS reliable.
 
 ## Tools (sim/)
 
-- `avg_starwars_mame.py` / `avg_starwars_hdl.py` / `diff_decoders.py` — MAME vs
-  HDL AVG diff (found the 3 SW drawer bugs; 100% match across 4 scenes).
-- `tb_slapstic.vhd` — slapstic type-101 validation (basic + alt). `-fsynopsys`.
-- `mathbox_halt_check.py` — ESB microcode halt analysis.
-- `esb_memmap.py` / `esb_diff_memmap.py` / `esb_find_regions.py` — memory-map
-  diff vs MAME dumps.
-- `esb_play.lua` — MAME gameplay-input harness. **UNSOLVED:** reliably driving
-  MAME into ESB *gameplay* headlessly (coin/fire injection finicky). If you
-  crack this, you can trace MAME's gameplay at vggo 5 and diff our subsystems.
-- MAME 0.287 at `../starwars-mister/.tools/mame0287/`; `esb.zip` verified;
-  `esb_freeze.txt` = 4s attract PC trace.
-
-## Gotchas (hard-won)
-
-- The overlay can't show POST-freeze state (frame pipeline stops with the CPU).
-- `opfetch`(=LIC) ≠ clean PC — unreliable for PC capture. Use SignalTap.
-- ESB 6809 runs ENTIRELY from ROM ($6xxx-$Exxx) — 0 RAM execution (MAME-confirmed
-  over 4s). The "runs from RAM" is the AVG reading vectors from vector RAM, NOT
-  the 6809.
-- ESB ~20 vggo/s (not 60).
-- GHDL: `--std=08 -frelaxed -fsynopsys`.
-- Quartus auto-rewrites `Arcade-StarWars.qsf` during builds → `git checkout` it
-  before commits (it's just a version-bump).
-- `mod_esb`-gated debug is verified SW-byte-identical; keep it that way.
+- `sim/mame-ref/` — decapped MAME slapstic.{cpp,h} + starwars.{cpp,h} + starwars_m.cpp (ground truth).
+- `tb_slapstic101.vhd` — the new GHDL TB (replaces the old `tb_slapstic.vhd` model).
+- MAME 0.287 at `../starwars-mister/.tools/mame0287/`; `esb.zip` verified.
+  - Slapstic banking trace: `mame.exe esb -log` → `error.log` logs every transition
+    ("direct switch bank N", "alt start/valid/select", "alt/add commit", "bitwise…").
+  - Gameplay-input harnesses (`esb_gp*.lua`): UNSOLVED headless — ESB stops kicking
+    every game-driven clock during the mode transition, so coin/fire injection is
+    unreliable. The reliable path was a human playing `mame.exe esb -log` for ~15s.
+- `avg_*` AVG diff harness; `mathbox_halt_check.py`; `esb_*memmap.py`.

@@ -212,10 +212,11 @@ Additionally the `>>3` truncation on `rel_x`/`rel_y` is now applied at the drawe
 
 The Python diff tool (`sim/diff_decoders.py`) verifies 100% per-VCTR exact match across all four captured attract scenes (6522 strokes total).
 
-**Frame timing** (`rtl/starwars.sv`, `rtl/vector_fb_ddram.sv`)
+**Frame timing — tried and reverted**
 
-- `FRAME_DONE` was wired directly to `avg_halted`, which fires once per vggo. SW software issues multiple vggos per 60 Hz CRT frame, so the rasterizer was swap-clearing mid-frame and discarding most content. Fix: trigger `FRAME_DONE` on the first `avg_halted` rising edge after each local `vblank` rising edge — frames now contain whole vggos and accumulate the way MAME's `vector_device` does.
-- Same-cycle `vbl_edge` + EOF coincidence in the triple-buffer state machine could pick the buffer that was simultaneously becoming the new `display_buf` as the next clear target, producing a visible black flash. Fix: compute `next_free_buf` against the post-vbl-edge effective `display_buf` instead of the raw value.
+The "spread vggos across one CRT frame" approach (vblank-aligned EOF + a triple-buffer same-cycle race fix) was implemented and then reverted at `534f2cb`. With the math fixes in place, each vggo produces correct MAME-equivalent content on its own, so Videodr0me's per-vggo swap rate gives a clean display without needing cross-vggo accumulation. The reroute introduced a 3-4 Hz black flash that was never root-caused (sim of the buffer state machine didn't reproduce it; ground truth would need SignalTap).
+
+Lesson preserved in `docs/HANDOFF.md`: Videodr0me's triple-buffer pipeline was designed and tested for the per-vggo EOF rate. Dropping that rate ~4× exposes timing characteristics they didn't validate. Don't reroute `FRAME_DONE` without a sim of the consequent buffer dynamics.
 
 **Sim infrastructure** (`sim/`)
 

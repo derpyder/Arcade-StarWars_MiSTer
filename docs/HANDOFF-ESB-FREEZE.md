@@ -1,10 +1,10 @@
-# ESB freeze — ROOT CAUSE FOUND & FIXED (2026-05-29)
+# ESB freeze — FIXED & SHIPPED (2026-05-29)
 
 **Repo:** `derpyder/Arcade-StarWars_ESB_MiSTer` (private), branch `esb-port`,
 local `D:\deck\fpga\starwars\sw\starwars-videodr0me\`.
 **Supersedes the earlier "hardware-timing-realm → do SignalTap" conclusion.**
 
-## TL;DR — it was the slapstic, and it's fixed (pending HW test)
+## TL;DR — it was the slapstic; fixed, confirmed on hardware, and shipped
 
 ESB gameplay crashes ~5 vggos in because the **slapstic 137412-101 could not do
 ALTERNATE ("devious") banking** — only direct banking. Attract uses only direct
@@ -54,21 +54,24 @@ alt sequence pivots on. GHDL-verified (11/11). `mod_esb`-gated → SW byte-ident
 
 GHDL: `C:\Users\mattl\bin\ghdl\bin\ghdl.exe -a --std=08 -frelaxed ../rtl/slapstic101.vhd tb_slapstic101.vhd` then `-e` then `-r tb_slapstic101 --stop-time=20us`.
 
-## Residual risk → THE hardware test
+## Confirmed on hardware + SHIPPED
 
-Logic is proven; **integrated runtime is NOT yet**. It hinges on our Cavnex 6809
-emitting the same cycle-level bus stream as MAME for ESB's convoluted
-computed-pointer access pattern (esp. the `$FFFF` dummy landing in the right cycle).
-Only confirmable on hardware (or a full-system CPU+slapstic+ROM GHDL sim).
+Confirmed working on hardware (DE10-Nano): ESB renders and keeps animating into
+gameplay — no freeze ~5 vggos in. The freeze-debug scaffolding (on-screen overlay
++ SignalTap probe bus) was then removed for the ship build (commit `35d9580`).
 
-**HW test:** build → stage `output_files/Arcade-StarWars.rbf` → run ESB → coin →
-select wave → play. If it no longer crashes ~5 vggos in (the clean Hoth frame keeps
-animating) → **fixed**.
+**Shipped:**
+- Public fork **`derpyder/Arcade-StarWars_MiSTer`** — a real GitHub fork of
+  `Videodr0me/Arcade-StarWars_MiSTer`, default branch `esb-port`.
+- Public release **`esb-v1.0`**: assets `Arcade-StarWars.rbf` + `MRA.zip` (the
+  Empire Strikes Back + Star Wars MRAs, names preserved inside the zip).
+- One core runs both Star Wars and Empire Strikes Back via `mod_esb`.
 
-**If it STILL crashes:** the slapstic LOGIC is right (MAME-verified), so the gap is
-cycle-accuracy of our 6809 vs MAME at `$9DFE/$9E00`. Next: full-system GHDL sim of
-that routine, or SignalTap the bus around `$9E00` (probe `st_addr/st_slapbs/st_vma`,
-trigger on `main_addr==16'h9E00`) and compare the cycle sequence to MAME's.
+**If a regression ever reappears** at `$9DFE/$9E00`: the slapstic LOGIC is
+MAME-verified, so the suspect is cycle-accuracy of our Cavnex 6809 vs MAME (the
+`$FFFF` dummy cycle landing in the right cycle). Diagnose with a full-system GHDL
+sim of that routine, or SignalTap the bus around `$9E00` and compare the cycle
+sequence to MAME's.
 
 ## Still VALIDATED CORRECT in sim (do not re-investigate)
 

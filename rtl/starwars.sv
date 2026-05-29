@@ -1021,6 +1021,67 @@ module starwars (
 
 	wire beam_in_bounds = (new_x >= 0 && new_x < 980) && (new_y >= 0 && new_y < 700);
 
+	// =========================================================================
+	// ESB FREEZE DIAGNOSTIC OVERLAY (mod_esb only; SW byte-identical)
+	// -------------------------------------------------------------------------
+	// ESB hangs ~3s in: clean frozen frame + music playing = the 6809 is stuck
+	// in a poll loop reading a flag/value our HW provides wrong.  Sim ruled out
+	// mathbox-hang, AVG-hang, audio handshake, slapstic-devious.  To localize,
+	// capture the LAST $4xxx read address -- when frozen in a tight poll the
+	// address bus settles on the polled flag -- and draw it on screen.
+	//
+	// Drawn as 20 bars across the bottom: cols 0-15 = last_io_addr[15:0]
+	// (LSB..MSB), cols 16-19 = {math_run, avg_halted, soundlatch_full,
+	// mainlatch_full}.  TALL bar = 1, SHORT = 0.  Read the address off a photo,
+	// map it to the subsystem ($4320=IN1 math_run/avg_halt/shields, $4400/$4401
+	// = sound latch, $4300=IN0, $4340/$4360=DSW, $45xx=NVRAM).
+	//
+	// Injected into the rasterizer pixel stream, interleaved (1 debug pixel per
+	// 64 clk_12) so it steals ~1.5% of pixels uniformly rather than biasing
+	// which vectors are lost.  Redrawn each frame; when frozen the last full
+	// frame (with bars showing the pre-freeze polled address) persists.
+	reg [15:0] last_io_addr = 16'h0000;
+	always @(posedge clk_12) begin
+		if (mod_esb && main_vma && main_rw && main_addr[15:12] == 4'h4)
+			last_io_addr <= main_addr;
+	end
+
+	wire [19:0] dbg_val = {mainlatch_full, soundlatch_full, avg_halted, math_run, last_io_addr};
+
+	reg        dbg_run = 1'b0;
+	reg  [4:0] dbg_bit = 5'd0;     // 0..19
+	reg  [5:0] dbg_row = 6'd0;
+	reg  [7:0] dbg_div = 8'd0;
+	reg        avg_go_d = 1'b0;
+	wire       dbg_slot = (dbg_div[5:0] == 6'd0);   // 1 debug pixel / 64 clk_12 (~1.5% steal, draws in <<1 frame)
+	wire [5:0] dbg_h    = dbg_val[dbg_bit] ? 6'd34 : 6'd5;   // tall=1, short=0
+	wire [9:0] dbg_x    = 10'd40 + dbg_bit * 7'd45;          // cols 40,85,...895
+	wire [9:0] dbg_y    = 10'd655 + {4'd0, dbg_row};         // bottom strip y=655..688
+	wire       dbg_active = mod_esb && dbg_run && dbg_slot;
+
+	always @(posedge clk_12) begin
+		avg_go_d <= avg_go;
+		dbg_div  <= dbg_div + 8'd1;
+		if (mod_esb && avg_go && !avg_go_d) begin   // START_FRAME: restart bars
+			dbg_run <= 1'b1; dbg_bit <= 5'd0; dbg_row <= 6'd0;
+		end else if (dbg_run && dbg_slot) begin
+			if (dbg_row + 6'd1 >= dbg_h) begin
+				dbg_row <= 6'd0;
+				if (dbg_bit == 5'd19) dbg_run <= 1'b0;
+				else dbg_bit <= dbg_bit + 5'd1;
+			end else begin
+				dbg_row <= dbg_row + 6'd1;
+			end
+		end
+	end
+
+	// Rasterizer pixel mux: debug pixel overrides the AVG pixel on debug slots.
+	wire [9:0] rast_x   = dbg_active ? dbg_x      : final_x;
+	wire [9:0] rast_y   = dbg_active ? dbg_y      : final_y;
+	wire [4:0] rast_z   = dbg_active ? 5'd31      : final_z;
+	wire [2:0] rast_rgb = dbg_active ? 3'b111     : avg_rgb;             // white bars
+	wire       rast_beam= dbg_active ? 1'b1       : (|avg_z && beam_in_bounds);
+
 	// Vector to Raster Conversion
 	wire fifo_full_led;
 	vector_fb_ddram rasterizer (
@@ -1028,13 +1089,13 @@ module starwars (
 		.clk_sys(clk_50),
 		.clk_12(clk_12),
 
-		.X_VECTOR(final_x),
-		.Y_VECTOR(final_y),
-		.Z_VECTOR(final_z),
-		.RGB(avg_rgb),
+		.X_VECTOR(rast_x),
+		.Y_VECTOR(rast_y),
+		.Z_VECTOR(rast_z),
+		.RGB(rast_rgb),
 		.BEAM_ENA(1'b1),
-		.BEAM_ON(|avg_z && beam_in_bounds),
-		
+		.BEAM_ON(rast_beam),
+
 		.START_FRAME(avg_go),
 		.FRAME_DONE(avg_halted),
 		.OSD_FLICKER(osd_raster_flicker),
